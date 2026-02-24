@@ -82,13 +82,17 @@ client.on(Events.InteractionCreate, async (interaction) => {
       ? _findMultiServerModuleById(serverId, 'playerStatsChannel')
       : playerStatsChannel;
     if (!psc) {
-      await interaction.reply({ content: 'Player stats module is currently disabled.', ephemeral: true });
+      await interaction.reply({ content: 'Player stats module is currently disabled.', flags: 64 });
       return;
     }
+    
+    // Defer immediately to prevent token expiry
+    await interaction.deferReply({ flags: 64 });
+    
     const selectedId = interaction.values[0];
     const isAdmin = isAdminView(interaction.member);
     const embed = psc.buildFullPlayerEmbed(selectedId, { isAdmin });
-    await interaction.reply({ embeds: [embed], ephemeral: true });
+    await interaction.editReply({ embeds: [embed] });
     return;
   }
 
@@ -99,13 +103,17 @@ client.on(Events.InteractionCreate, async (interaction) => {
       ? _findMultiServerModuleById(serverId, 'playerStatsChannel')
       : playerStatsChannel;
     if (!psc) {
-      await interaction.reply({ content: 'Player stats module is currently disabled.', ephemeral: true });
+      await interaction.reply({ content: 'Player stats module is currently disabled.', flags: 64 });
       return;
     }
+    
+    // Defer immediately to prevent token expiry
+    await interaction.deferReply({ flags: 64 });
+    
     const clanName = interaction.values[0].replace(/^clan:/, '');
     const isAdmin = isAdminView(interaction.member);
     const embed = psc.buildClanEmbed(clanName, { isAdmin });
-    await interaction.reply({ embeds: [embed], ephemeral: true });
+    await interaction.editReply({ embeds: [embed] });
     return;
   }
 
