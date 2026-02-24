@@ -28,6 +28,7 @@ class ChatRelay {
     this.client = client;
     this._config = deps.config || _defaultConfig;
     this._rcon = deps.rcon || _defaultRcon;
+    this._db = deps.db || null;
     this._label = deps.label || 'CHAT RELAY';
     this.adminChannel = null;
     this._lastLines = [];      // snapshot for diff
@@ -270,9 +271,13 @@ class ChatRelay {
       const thread = await this._getOrCreateChatThread();
 
       for (const line of newLines) {
-        const msg = this._formatLine(line);
-        if (msg && thread) {
-          await thread.send(msg);
+        const parsed = this._parseLine(line);
+        if (parsed) {
+          // DB first — insert before posting to Discord
+          this._logChat(parsed.entry);
+          if (parsed.formatted && thread) {
+            await thread.send(parsed.formatted);
+          }
         }
 
         // Check for !admin command (posts to main channel, not thread)
@@ -387,7 +392,12 @@ class ChatRelay {
     } catch (_) {}
   }
 
-  _formatLine(line) {
+  /**
+   * Parse a raw fetchchat line into a structured object for DB insertion
+   * and a formatted Discord message string.
+   * Returns { formatted, entry } or null if the line should be skipped.
+   */
+  _parseLine(line) {
     // Skip bot-generated admin broadcasts (no <PN> tag = sent by us, not a player)
     if (BOT_ADMIN_RE.test(line)) return null;
 
@@ -400,25 +410,57 @@ class ChatRelay {
     if (!m) m = PLAIN_CHAT_RE.exec(cleaned); // admin players may lack <PN> tags
     if (m) {
       const name = m[1].trim();
-      const text = this._sanitize(m[2].trim());
+      const rawText = m[2].trim();
+      const text = this._sanitize(rawText);
       const badge = isAdmin ? ' 🛡️' : '';
-      return `💬 **${name}${badge}:** ${text}`;
+      return {
+        formatted: `💬 **${name}${badge}:** ${text}`,
+        entry: { type: 'player', playerName: name, message: rawText, direction: 'game', isAdmin },
+      };
     }
 
     // Player joined
     m = JOIN_RE.exec(cleaned);
-    if (m) return `📥 **${m[1]}** joined the server`;
+    if (m) return {
+      formatted: `📥 **${m[1]}** joined the server`,
+      entry: { type: 'join', playerName: m[1], message: 'joined', direction: 'game', isAdmin: false },
+    };
 
     // Player left
     m = LEFT_RE.exec(cleaned);
-    if (m) return `📤 **${m[1]}** left the server`;
+    if (m) return {
+      formatted: `📤 **${m[1]}** left the server`,
+      entry: { type: 'leave', playerName: m[1], message: 'left', direction: 'game', isAdmin: false },
+    };
 
     // Player died
     m = DIED_RE.exec(cleaned);
-    if (m) return `💀 **${m[1]}** died`;
+    if (m) return {
+      formatted: `💀 **${m[1]}** died`,
+      entry: { type: 'death', playerName: m[1], message: 'died', direction: 'game', isAdmin: false },
+    };
 
     // Unknown format — skip silently
     return null;
+  }
+
+  /** Legacy wrapper — returns only the formatted string. */
+  _formatLine(line) {
+    const parsed = this._parseLine(line);
+    return parsed ? parsed.formatted : null;
+  }
+
+  /** Insert a chat entry into the DB (best-effort, never throws). */
+  _logChat(entry) {
+    if (!this._db) return;
+    try {
+      this._db.insertChat(entry);
+    } catch (err) {
+      if (!this._logChatWarned) {
+        console.warn(`[${this._label}] DB chat insert failed:`, err.message);
+        this._logChatWarned = true;
+      }
+    }
   }
 
   _sanitize(text) {
@@ -457,6 +499,15 @@ class ChatRelay {
       displayName = this._sanitizeRcon(displayName).replace(/[^a-zA-Z0-9 _\-.']/g, '').slice(0, 32) || 'User';
       text = this._sanitizeRcon(text);
       await this._rcon.send(`admin [Bot] [Discord] ${displayName}: ${text}`);
+      // Log outbound message to DB
+      this._logChat({
+        type: 'discord_to_game',
+        playerName: '',
+        message: `${displayName}: ${text}`,
+        direction: 'discord',
+        discordUser: displayName,
+        isAdmin: false,
+      });
       await message.react('✅');
     } catch (err) {
       console.error(`[${this._label}] Failed to relay admin message:`, err.message);

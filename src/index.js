@@ -391,7 +391,7 @@ client.once(Events.ClientReady, async (readyClient) => {
       setStatus('Chat Relay', '🟡 Skipped (ADMIN_CHANNEL_ID not set)');
       console.log('[BOT] Chat relay skipped — ADMIN_CHANNEL_ID not configured');
     } else {
-      chatRelay = new ChatRelay(readyClient);
+      chatRelay = new ChatRelay(readyClient, { db });
       if (config.nukeBot) chatRelay._nukeActive = true;
       // If LogWatcher handles activity threads, coordinate day-rollover ordering
       if (logWatcher) {
