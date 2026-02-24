@@ -32,6 +32,7 @@ const HumanitZDB = require('./db/database');
 const SaveService = require('./parsers/save-service');
 const gameReference = require('./parsers/game-reference');
 const { writeAgent } = require('./parsers/agent-builder');
+const WebMapServer = require('./web-map/server');
 
 // ── Create Discord client ───────────────────────────────────
 const intents = [
@@ -77,17 +78,17 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
   // ── Persistent select menu on the player-stats channel ──
   if (interaction.isStringSelectMenu() && interaction.customId.startsWith('playerstats_player_select')) {
+    // Defer immediately to prevent token expiry
+    await interaction.deferReply({ flags: 64 });
+    
     const serverId = interaction.customId.split(':')[1] || '';
     const psc = serverId
       ? _findMultiServerModuleById(serverId, 'playerStatsChannel')
       : playerStatsChannel;
     if (!psc) {
-      await interaction.reply({ content: 'Player stats module is currently disabled.', flags: 64 });
+      await interaction.editReply({ content: 'Player stats module is currently disabled.', flags: 64 });
       return;
     }
-    
-    // Defer immediately to prevent token expiry
-    await interaction.deferReply({ flags: 64 });
     
     const selectedId = interaction.values[0];
     const isAdmin = isAdminView(interaction.member);
@@ -98,17 +99,17 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
   // ── Clan select menu on the player-stats channel ──
   if (interaction.isStringSelectMenu() && interaction.customId.startsWith('playerstats_clan_select')) {
+    // Defer immediately to prevent token expiry
+    await interaction.deferReply({ flags: 64 });
+    
     const serverId = interaction.customId.split(':')[1] || '';
     const psc = serverId
       ? _findMultiServerModuleById(serverId, 'playerStatsChannel')
       : playerStatsChannel;
     if (!psc) {
-      await interaction.reply({ content: 'Player stats module is currently disabled.', flags: 64 });
+      await interaction.editReply({ content: 'Player stats module is currently disabled.', flags: 64 });
       return;
     }
-    
-    // Defer immediately to prevent token expiry
-    await interaction.deferReply({ flags: 64 });
     
     const clanName = interaction.values[0].replace(/^clan:/, '');
     const isAdmin = isAdminView(interaction.member);
@@ -146,10 +147,11 @@ let playerStatsChannel;
 let pvpScheduler;
 let panelChannel;
 let multiServerManager;
-let db;           // HumanitZDB instance
-let saveService;  // SaveService instance
-let activityLog;  // ActivityLog instance
-let adminChannel; // cached for online/offline notifications
+let webMapServer;  // Web map server instance
+let db;            // HumanitZDB instance
+let saveService;   // SaveService instance
+let activityLog;   // ActivityLog instance
+let adminChannel;  // cached for online/offline notifications
 const startedAt = new Date();
 
 const moduleStatus = {};
@@ -576,6 +578,26 @@ client.once(Events.ClientReady, async (readyClient) => {
     console.log('[BOT] Panel disabled via ENABLE_PANEL=false');
   }
 
+  // ── Web map server ──────────────────────────────────────────
+  const webMapPort = parseInt(process.env.WEB_MAP_PORT, 10);
+  if (webMapPort && config.discordClientSecret) {
+    try {
+      webMapServer = new WebMapServer(readyClient);
+      await webMapServer.start();
+      setStatus('WebMap', `🟢 Running on http://localhost:${webMapPort}`);
+      console.log(`[BOT] Web map server started: http://localhost:${webMapPort}`);
+    } catch (err) {
+      setStatus('WebMap', `⚠️ Failed to start: ${err.message}`);
+      console.error('[BOT] Web map server failed to start:', err.message);
+    }
+  } else if (!webMapPort) {
+    setStatus('WebMap', '⚫ Disabled (no WEB_MAP_PORT)');
+    console.log('[BOT] Web map disabled — set WEB_MAP_PORT in .env to enable');
+  } else if (!config.discordClientSecret) {
+    setStatus('WebMap', '⚠️ Disabled (missing DISCORD_CLIENT_SECRET for OAuth)');
+    console.log('[BOT] Web map disabled — DISCORD_CLIENT_SECRET required for Discord OAuth');
+  }
+
   // ── Post online notification to admin channel ──
   const SHUTDOWN_FLAG = path.join(__dirname, '..', 'data', 'bot-running.flag');
   try {
@@ -799,6 +821,7 @@ async function shutdown(reason = 'Manual shutdown') {
   if (autoMessages) autoMessages.stop();
   if (pvpScheduler) pvpScheduler.stop();
   if (panelChannel) panelChannel.stop();
+  if (webMapServer) webMapServer.stop();
   if (logWatcher) logWatcher.stop();
   if (playerStatsChannel) playerStatsChannel.stop();
   if (activityLog) activityLog.stop();

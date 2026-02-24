@@ -14,6 +14,7 @@ CHANGELOG.json
 
 # Personal developer scripts (credentials, diagnostics)
 _*.js
+scripts/
 
 # Web map generated tile cache only
 src/web-map/public/tiles/

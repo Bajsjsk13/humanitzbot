@@ -807,6 +807,16 @@ class PanelChannel {
   }
 
   /**
+   * Check admin permission (synchronous). Returns true if admin, false if not.
+   * Caller must handle defer/reply themselves.
+   * Usage: `if (!this._isAdmin(interaction)) { await interaction.editReply('❌ Admin only'); return; }`
+   */
+  _isAdmin(interaction) {
+    return interaction.member?.permissions?.has(PermissionFlagsBits.Administrator) || false;
+  }
+
+  /**
+   * @deprecated Use _isAdmin() + manual editReply instead. This causes interaction timeout issues.
    * Check admin permission. Returns true if admin, false (with ephemeral reply) if not.
    * Usage: `if (!await this._requireAdmin(interaction, 'edit config')) return true;`
    */
@@ -1081,14 +1091,18 @@ class PanelChannel {
   // ═══════════════════════════════════════════════════════════
 
   async _handlePowerButton(interaction, id) {
-    if (!await this._requireAdmin(interaction, 'use panel controls')) return true;
+    // Defer immediately to prevent token expiry
+    await interaction.deferReply({ ephemeral: true });
 
-    if (!panelApi.available) {
-      await interaction.reply({ content: '❌ Panel API is not configured. Power controls require PANEL_SERVER_URL and PANEL_API_KEY.', ephemeral: true });
+    if (!this._isAdmin(interaction)) {
+      await interaction.editReply('❌ Only administrators can use panel controls.');
       return true;
     }
 
-    await interaction.deferReply({ ephemeral: true });
+    if (!panelApi.available) {
+      await interaction.editReply('❌ Panel API is not configured. Power controls require PANEL_SERVER_URL and PANEL_API_KEY.');
+      return true;
+    }
 
     try {
       switch (id) {
@@ -1198,9 +1212,13 @@ class PanelChannel {
   // ═══════════════════════════════════════════════════════════
 
   async _handleDiagnosticsButton(interaction) {
-    if (!await this._requireAdmin(interaction, 'view diagnostics')) return true;
     // Defer — probes can take a few seconds
     await interaction.deferReply({ ephemeral: true });
+    
+    if (!this._isAdmin(interaction)) {
+      await interaction.editReply('❌ Only administrators can view diagnostics.');
+      return true;
+    }
 
     const rcon = require('./rcon');
     const playerStats = require('./player-stats');
@@ -1627,14 +1645,17 @@ class PanelChannel {
   // ═══════════════════════════════════════════════════════════
 
   async _handleMapButton(interaction, type) {
-    if (!await this._requireAdmin(interaction, 'use panel controls')) return true;
-
-    if (!config.enablePlayerMap) {
-      await interaction.reply({ content: '🗺️ Player map tracking is not enabled.', ephemeral: true });
+    await interaction.deferReply({ ephemeral: true });
+    
+    if (!this._isAdmin(interaction)) {
+      await interaction.editReply('❌ Only administrators can use panel controls.');
       return true;
     }
 
-    await interaction.deferReply({ ephemeral: true });
+    if (!config.enablePlayerMap) {
+      await interaction.editReply('🗺️ Player map tracking is not enabled.');
+      return true;
+    }
 
     try {
       const { AttachmentBuilder } = require('discord.js');
@@ -1766,16 +1787,19 @@ class PanelChannel {
   // ═══════════════════════════════════════════════════════════
 
   async _handleEnvModal(interaction) {
-    if (!await this._requireAdmin(interaction, 'edit bot config')) return true;
+    await interaction.deferReply({ ephemeral: true });
+    
+    if (!this._isAdmin(interaction)) {
+      await interaction.editReply('❌ Only administrators can edit bot config.');
+      return true;
+    }
 
     const categoryId = interaction.customId.replace('panel_env_modal:', '');
     const category = ENV_CATEGORIES.find(c => c.id === categoryId);
     if (!category) {
-      await interaction.reply({ content: '❌ Unknown category.', ephemeral: true });
+      await interaction.editReply('❌ Unknown category.');
       return true;
     }
-
-    await interaction.deferReply({ ephemeral: true });
 
     try {
       const updates = {};
@@ -2103,12 +2127,17 @@ class PanelChannel {
   }
 
   async _handleAddServerStep2Modal(interaction) {
-    if (!await this._requireAdmin(interaction, 'manage servers')) return true;
+    await interaction.deferReply({ ephemeral: true });
+    
+    if (!this._isAdmin(interaction)) {
+      await interaction.editReply('❌ Only administrators can manage servers.');
+      return true;
+    }
 
     const userId = interaction.customId.replace('panel_add_modal_step2:', '');
     const pending = this._pendingServers.get(userId);
     if (!pending) {
-      await interaction.reply({ content: '❌ Session expired. Please start over with "Add Server".', ephemeral: true });
+      await interaction.editReply('❌ Session expired. Please start over with "Add Server".');
       return true;
     }
 
@@ -2577,10 +2606,14 @@ class PanelChannel {
   }
 
   async _handleEditServerModal(interaction) {
-    if (!await this._requireAdmin(interaction, 'manage servers')) return true;
+    await interaction.deferReply({ ephemeral: true });
+    
+    if (!this._isAdmin(interaction)) {
+      await interaction.editReply('❌ Only administrators can manage servers.');
+      return true;
+    }
 
     const serverId = interaction.customId.replace('panel_srv_edit_modal:', '');
-    await interaction.deferReply({ ephemeral: true });
 
     try {
       const updates = {
@@ -2605,10 +2638,14 @@ class PanelChannel {
   }
 
   async _handleEditChannelsModal(interaction) {
-    if (!await this._requireAdmin(interaction, 'manage servers')) return true;
+    await interaction.deferReply({ ephemeral: true });
+    
+    if (!this._isAdmin(interaction)) {
+      await interaction.editReply('❌ Only administrators can manage servers.');
+      return true;
+    }
 
     const serverId = interaction.customId.replace('panel_srv_channels_modal:', '');
-    await interaction.deferReply({ ephemeral: true });
 
     try {
       const channels = {};
@@ -2634,10 +2671,14 @@ class PanelChannel {
   }
 
   async _handleEditSftpModal(interaction) {
-    if (!await this._requireAdmin(interaction, 'manage servers')) return true;
+    await interaction.deferReply({ ephemeral: true });
+    
+    if (!this._isAdmin(interaction)) {
+      await interaction.editReply('❌ Only administrators can manage servers.');
+      return true;
+    }
 
     const serverId = interaction.customId.replace('panel_srv_sftp_modal:', '');
-    await interaction.deferReply({ ephemeral: true });
 
     try {
       const sftp = {};
@@ -2931,8 +2972,12 @@ class PanelChannel {
   // ═══════════════════════════════════════════════════════════
 
   async _handleEnvSyncButton(interaction) {
-    if (!await this._requireAdmin(interaction, 'sync .env configuration')) return true;
     await interaction.deferReply({ ephemeral: true });
+    
+    if (!this._isAdmin(interaction)) {
+      await interaction.editReply('❌ Only administrators can sync .env configuration.');
+      return true;
+    }
 
     const { needsSync, syncEnv, getVersion, getExampleVersion } = require('./env-sync');
 
@@ -2972,14 +3017,17 @@ class PanelChannel {
   // ═══════════════════════════════════════════════════════════
 
   async _handleWelcomeEditButton(interaction) {
-    if (!await this._requireAdmin(interaction, 'edit the welcome message')) return true;
-
-    if (!this._hasSftp) {
-      await interaction.reply({ content: '❌ SFTP credentials not configured.', ephemeral: true });
+    await interaction.deferReply({ ephemeral: true });
+    
+    if (!this._isAdmin(interaction)) {
+      await interaction.editReply('❌ Only administrators can edit the welcome message.');
       return true;
     }
 
-    await interaction.deferReply({ ephemeral: true });
+    if (!this._hasSftp) {
+      await interaction.editReply('❌ SFTP credentials not configured.');
+      return true;
+    }
 
     // Read current WelcomeMessage.txt from server
     let currentContent = '';
@@ -3068,9 +3116,12 @@ class PanelChannel {
   }
 
   async _handleWelcomeModal(interaction) {
-    if (!await this._requireAdmin(interaction, 'edit the welcome message')) return true;
-
     await interaction.deferReply({ ephemeral: true });
+    
+    if (!this._isAdmin(interaction)) {
+      await interaction.editReply('❌ Only administrators can edit the welcome message.');
+      return true;
+    }
 
     const newContent = interaction.fields.getTextInputValue('welcome_content');
 
@@ -3214,9 +3265,12 @@ class PanelChannel {
   }
 
   async _handleBroadcastsModal(interaction) {
-    if (!await this._requireAdmin(interaction, 'edit broadcasts')) return true;
-
     await interaction.deferReply({ ephemeral: true });
+    
+    if (!this._isAdmin(interaction)) {
+      await interaction.editReply('❌ Only administrators can edit broadcasts.');
+      return true;
+    }
 
     const linkText = interaction.fields.getTextInputValue('link_text').trim();
     const promoText = interaction.fields.getTextInputValue('promo_text').trim();
