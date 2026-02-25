@@ -69,10 +69,10 @@ class WebMapServer {
     // xMin = world X at the BOTTOM of the map, xMax = world X at the TOP
     // yMin = world Y at the LEFT of the map, yMax = world Y at the RIGHT
     return {
-      xMin: -10000,    // south edge (bottom of map)
-      xMax: 300000,    // north edge (top of map)
+      xMin: -60000,    // south edge (bottom of map)
+      xMax: 380000,    // north edge (top of map)
       yMin: -400000,   // west edge (left of map)
-      yMax: 10000,     // east edge (right of map)
+      yMax: 50000,     // east edge (right of map)
     };
   }
 

@@ -17,10 +17,10 @@ const MAP_CACHE_FILE = path.join(DATA_DIR, 'map-image.png');
 
 // Default map world bounds (UE4 centimeters) — configurable via env
 const DEFAULT_WORLD = {
-  xMin: parseFloat(process.env.MAP_WORLD_X_MIN) || -20000,
-  xMax: parseFloat(process.env.MAP_WORLD_X_MAX) || 260000,
-  yMin: parseFloat(process.env.MAP_WORLD_Y_MIN) || -370000,
-  yMax: parseFloat(process.env.MAP_WORLD_Y_MAX) || 20000,
+  xMin: parseFloat(process.env.MAP_WORLD_X_MIN) || -60000,
+  xMax: parseFloat(process.env.MAP_WORLD_X_MAX) || 380000,
+  yMin: parseFloat(process.env.MAP_WORLD_Y_MIN) || -400000,
+  yMax: parseFloat(process.env.MAP_WORLD_Y_MAX) || 50000,
 };
 
 // Heatmap grid resolution

@@ -540,10 +540,10 @@ function _readMapProperty(r, prop, dataSize, cname) {
  * scan forward to find the next valid property header.
  * @param {object} r - Reader
  * @param {number} startPos - Position where we got stuck
- * @param {number} [maxScan=50000] - Max bytes to scan forward
+ * @param {number} [maxScan=500000] - Max bytes to scan forward
  * @returns {boolean} true if a valid offset was found and reader repositioned
  */
-function recoverForward(r, startPos, maxScan = 50000) {
+function recoverForward(r, startPos, maxScan = 500000) {
   const buf = r.buf;
   for (let scan = startPos + 1; scan < Math.min(startPos + maxScan, buf.length - 10); scan++) {
     const len = buf.readInt32LE(scan);
