@@ -946,6 +946,7 @@ async function _nukeChannel(client, channelId, botId) {
       'log-offsets.json', 'day-counts.json', 'pvp-kills.json',
       'humanitz.db', 'humanitz.db-wal', 'humanitz.db-shm',
       'kill-tracker.json', 'player-locations.json', 'map-image.png',
+      'save-cache.json', 'weekly-baseline.json',
     ];
     for (const f of filesToWipe) {
       const fp = path.join(dataDir, f);

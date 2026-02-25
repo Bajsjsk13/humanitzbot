@@ -32,6 +32,8 @@ describe('PlayerMapTracker', () => {
     // Mock writeFileSync to prevent disk writes
     fs.writeFileSync = () => {};
     tracker = require('../src/player-map');
+    // Force lazy _load() while mocks are active so it sees empty state
+    tracker._load();
     // Clear the auto-save timer immediately
     if (tracker._saveTimer) clearInterval(tracker._saveTimer);
     tracker._saveTimer = null;

@@ -309,7 +309,7 @@ app.post('/api/admin/message', (req, res) => {
   res.json({ ok: true, result: 'dev mode — message logged' });
 });
 
-const PORT = process.env.MAP_PORT || 3000;
+const PORT = process.env.WEB_MAP_PORT || process.env.MAP_PORT || 3000;
 app.listen(PORT, () => {
   console.log('===========================================');
   console.log(`  HumanitZ Web Map: http://localhost:${PORT}`);
