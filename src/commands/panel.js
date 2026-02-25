@@ -1,4 +1,4 @@
-const { SlashCommandBuilder, EmbedBuilder, PermissionFlagsBits } = require('discord.js');
+const { SlashCommandBuilder, EmbedBuilder, PermissionFlagsBits, MessageFlags } = require('discord.js');
 const panelApi = require('../panel-api');
 const { formatBytes, formatUptime } = require('../server-resources');
 
@@ -100,7 +100,7 @@ module.exports = {
     if (!panelApi.available) {
       await interaction.reply({
         content: '❌ Panel API is not configured. Set `PANEL_SERVER_URL` and `PANEL_API_KEY` in your `.env` file.',
-        ephemeral: true,
+        flags: MessageFlags.Ephemeral,
       });
       return;
     }
@@ -119,7 +119,7 @@ module.exports = {
       case 'backup-delete': return _backupDelete(interaction);
       case 'schedules':     return _schedules(interaction);
       default:
-        await interaction.reply({ content: `❌ Unknown subcommand: ${sub}`, ephemeral: true });
+        await interaction.reply({ content: `❌ Unknown subcommand: ${sub}`, flags: MessageFlags.Ephemeral });
     }
   },
 };
@@ -229,7 +229,7 @@ async function _power(interaction, signal) {
 // ── /panel console ──────────────────────────────────────────
 
 async function _console(interaction) {
-  await interaction.deferReply({ ephemeral: true });
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
   const command = interaction.options.getString('command');
 
@@ -318,7 +318,7 @@ async function _backupCreate(interaction) {
 // ── /panel backup-delete ────────────────────────────────────
 
 async function _backupDelete(interaction) {
-  await interaction.deferReply({ ephemeral: true });
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
   const uuid = interaction.options.getString('uuid');
 

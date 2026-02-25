@@ -1,4 +1,4 @@
-const { SlashCommandBuilder, EmbedBuilder } = require('discord.js');
+const { SlashCommandBuilder, EmbedBuilder, MessageFlags } = require('discord.js');
 const { getServerInfo, getPlayerList } = require('../server-info');
 const gameData = require('../game-data');
 const fs = require('fs');

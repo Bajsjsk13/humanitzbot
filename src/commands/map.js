@@ -1,4 +1,4 @@
-const { SlashCommandBuilder, EmbedBuilder, AttachmentBuilder, PermissionFlagsBits } = require('discord.js');
+const { SlashCommandBuilder, EmbedBuilder, AttachmentBuilder, PermissionFlagsBits, MessageFlags } = require('discord.js');
 const config = require('../config');
 const playerMap = require('../player-map');
 
@@ -29,7 +29,7 @@ module.exports = {
   async execute(interaction) {
     // Check if player map is enabled
     if (!config.enablePlayerMap) {
-      return interaction.reply({ content: '🗺️ Player map tracking is not enabled. Set `ENABLE_PLAYER_MAP=true` in your config.', ephemeral: true });
+      return interaction.reply({ content: '🗺️ Player map tracking is not enabled. Set `ENABLE_PLAYER_MAP=true` in your config.', flags: MessageFlags.Ephemeral });
     }
 
     // Map overlay generation is not yet functional — notify the user
@@ -37,7 +37,7 @@ module.exports = {
     if (sub === 'players' || sub === 'heatmap' || sub === 'trail') {
       return interaction.reply({
         content: '🗺️ Map overlay commands are currently under development and not yet working.\nUse `/map stats` to see tracking statistics.',
-        ephemeral: true,
+        flags: MessageFlags.Ephemeral,
       });
     }
 
@@ -157,7 +157,7 @@ module.exports = {
       if (config.showCoordinatesAdminOnly) {
         const isAdmin = interaction.member?.permissions?.has(PermissionFlagsBits.Administrator);
         if (!isAdmin) {
-          return interaction.reply({ content: '🔒 Player map is restricted to administrators.', ephemeral: true });
+          return interaction.reply({ content: '🔒 Player map is restricted to administrators.', flags: MessageFlags.Ephemeral });
         }
       }
 

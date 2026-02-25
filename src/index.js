@@ -1,4 +1,4 @@
-const { Client, GatewayIntentBits, Collection, Events, REST, Routes, EmbedBuilder } = require('discord.js');
+const { Client, GatewayIntentBits, Collection, Events, REST, Routes, EmbedBuilder, MessageFlags } = require('discord.js');
 
 // ── Timestamped console logging ──────────────────────────────
 // Patches console globally so every module gets [HH:MM:SS] prefixes
@@ -128,7 +128,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
     await command.execute(interaction);
   } catch (err) {
     console.error(`[BOT] Error in /${interaction.commandName}:`, err);
-    const reply = { content: '❌ Something went wrong running that command.', ephemeral: true };
+    const reply = { content: '❌ Something went wrong running that command.', flags: MessageFlags.Ephemeral };
     if (interaction.replied || interaction.deferred) {
       await interaction.followUp(reply);
     } else {
