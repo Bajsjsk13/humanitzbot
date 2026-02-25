@@ -984,15 +984,15 @@ function buildActivityEntries(hmzLog, connectedLog) {
 
       // Player death
       m = body.match(/^Player died \((.+)\)$/);
-      if (m) { entries.push({ type: 'player_death', category: 'death', actorName: m[1].trim(), item: 'Unknown', createdAt: ts }); continue; }
+      if (m) { entries.push({ type: 'player_death', category: 'death', actorName: m[1].trim(), item: 'Unknown', source: 'log', createdAt: ts }); continue; }
 
       // Build
       m = body.match(/^(.+?)\((\d{17})[^)]*\)\s*finished building\s+(.+)$/);
-      if (m) { entries.push({ type: 'player_build', category: 'build', actor: m[2], actorName: m[1].trim(), item: simplifyBlueprintName(m[3].trim()), createdAt: ts }); continue; }
+      if (m) { entries.push({ type: 'player_build', category: 'build', actor: m[2], actorName: m[1].trim(), item: simplifyBlueprintName(m[3].trim()), source: 'log', createdAt: ts }); continue; }
 
       // Container looted (skip self-loot)
       m = body.match(/^(.+?)\s*\((\d{17})[^)]*\)\s*looted a container\s*\(([^)]+)\)\s*owner by\s*(\d{17})/);
-      if (m && m[2] !== m[4]) { entries.push({ type: 'container_looted', category: 'loot', actor: m[2], actorName: m[1].trim(), item: m[3], details: { owner: m[4] }, createdAt: ts }); continue; }
+      if (m && m[2] !== m[4]) { entries.push({ type: 'container_looted', category: 'loot', actor: m[2], actorName: m[1].trim(), item: m[3], details: { owner: m[4] }, source: 'log', createdAt: ts }); continue; }
 
       // Raid
       m = body.match(/^Building \(([^)]+)\) owned by \((\d{17}[^)]*)\) damaged \([\d.]+\) by (.+?)(?:\((\d{17})[^)]*\))?(\s*\(Destroyed\))?$/);
@@ -1002,18 +1002,18 @@ function buildActivityEntries(hmzLog, connectedLog) {
         const atkId = m[4];
         const destroyed = !!m[5];
         if (atkRaw !== 'Decayfalse' && atkRaw !== 'Zeek' && ownerId && !(atkId && atkId === ownerId)) {
-          entries.push({ type: destroyed ? 'raid_destroy' : 'raid_hit', category: 'raid', actor: atkId || '', actorName: atkRaw, item: simplifyBlueprintName(m[1]), details: { owner: ownerId }, createdAt: ts });
+          entries.push({ type: destroyed ? 'raid_destroy' : 'raid_hit', category: 'raid', actor: atkId || '', actorName: atkRaw, item: simplifyBlueprintName(m[1]), details: { owner: ownerId }, source: 'log', createdAt: ts });
         }
         continue;
       }
 
       // Admin access
       m = body.match(/^(.+?)\s+gained admin access!$/);
-      if (m) { entries.push({ type: 'admin_access', category: 'admin', actorName: m[1].trim(), createdAt: ts }); continue; }
+      if (m) { entries.push({ type: 'admin_access', category: 'admin', actorName: m[1].trim(), source: 'log', createdAt: ts }); continue; }
 
       // Anti-cheat
       m = body.match(/^(Stack limit detected in drop function|Odd behavior.*?Cheat)\s*\((.+?)\s*-\s*(\d{17})/);
-      if (m) { entries.push({ type: 'cheat_flag', category: 'admin', actor: m[3], actorName: m[2].trim(), item: m[1].trim(), createdAt: ts }); continue; }
+      if (m) { entries.push({ type: 'cheat_flag', category: 'admin', actor: m[3], actorName: m[2].trim(), item: m[1].trim(), source: 'log', createdAt: ts }); continue; }
     }
   }
 
@@ -1033,6 +1033,7 @@ function buildActivityEntries(hmzLog, connectedLog) {
         category: 'player',
         actor: steamId,
         actorName: name.trim(),
+        source: 'log',
         createdAt: ts,
       });
     }

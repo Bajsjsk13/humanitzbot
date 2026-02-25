@@ -28,9 +28,11 @@ class PlaytimeTracker {
 
   init() {
     if (this._data) return; // already initialised
-    this._load();
+    this._loadFromDb();      // try DB first
+    if (!this._data) this._load(); // fall back to JSON
     this._cleanGhostEntries();
     this._backfillUniqueDayPeak();
+    this._migrateJsonToDb(); // one-time: push any JSON-only data into DB
     // Periodic save so we don't lose data on crash
     this._saveTimer = setInterval(() => this._autoSave(), SAVE_INTERVAL);
     console.log(`[${this._label}] Tracking since ${this._data.trackingSince}`);
@@ -87,6 +89,7 @@ class PlaytimeTracker {
       this._data.players[id].sessions += 1;
     }
     this._dirty = true;
+    this._persistPlaytime(id);
 
     // Register alias in unified identity DB
     if (this._db) {
@@ -199,6 +202,7 @@ class PlaytimeTracker {
     }
 
     this._dirty = true;
+    this._persistPeaks();
   }
 
   recordUniqueToday(id) {
@@ -232,6 +236,7 @@ class PlaytimeTracker {
     }
 
     this._dirty = true;
+    this._persistPeaks();
   }
 
   getPeaks() {
@@ -278,6 +283,138 @@ class PlaytimeTracker {
         yesterdayUnique: 0,
       };
     }
+  }
+
+  // ── DB-first helpers ────────────────────────────────────
+
+  /** Load player playtime from DB into the in-memory cache. */
+  _loadFromDb() {
+    if (!this._db) return;
+    try {
+      const rows = this._db.getAllPlayerPlaytime();
+      if (!rows || rows.length === 0) return; // DB empty — fall through to JSON
+
+      // Load peaks from server_peaks table
+      const peaksData = this._db.getAllServerPeaks();
+      const peaks = {
+        allTimePeak: parseInt(peaksData.all_time_peak || '0', 10),
+        allTimePeakDate: peaksData.all_time_peak_date || null,
+        todayPeak: parseInt(peaksData.today_peak || '0', 10),
+        todayDate: peaksData.today_date || this._config.getToday(),
+        uniqueToday: this._parseJson(peaksData.unique_today, []),
+        uniqueDayPeak: parseInt(peaksData.unique_day_peak || '0', 10),
+        uniqueDayPeakDate: peaksData.unique_day_peak_date || null,
+        yesterdayUnique: parseInt(peaksData.yesterday_unique || '0', 10),
+      };
+
+      this._data = {
+        trackingSince: peaksData.tracking_since || new Date().toISOString(),
+        players: {},
+        peaks,
+      };
+
+      for (const row of rows) {
+        this._data.players[row.steam_id] = {
+          name: row.name || row.steam_id,
+          totalMs: (row.playtime_seconds || 0) * 1000,
+          sessions: row.session_count || 0,
+          firstSeen: row.playtime_first_seen || null,
+          lastLogin: row.playtime_last_login || null,
+          lastSeen: row.playtime_last_seen || null,
+        };
+      }
+      console.log(`[${this._label}] Loaded ${rows.length} player(s) from database`);
+    } catch (err) {
+      console.warn(`[${this._label}] DB load failed, falling back to JSON:`, err.message);
+      this._data = null; // ensure fallback triggers
+    }
+  }
+
+  /** One-time migration: push JSON playtime into the DB if not already there. */
+  _migrateJsonToDb() {
+    if (!this._db || !this._data) return;
+    try {
+      const dbRows = this._db.getAllPlayerPlaytime();
+      const dbIds = new Set(dbRows.map(r => r.steam_id));
+      let migrated = 0;
+      for (const [id, record] of Object.entries(this._data.players)) {
+        if (!/^\d{17}$/.test(id)) continue;
+        if (dbIds.has(id)) continue; // already in DB
+        this._db.upsertFullPlaytime(id, {
+          name: record.name || '',
+          totalMs: record.totalMs || 0,
+          sessions: record.sessions || 0,
+          firstSeen: record.firstSeen || null,
+          lastLogin: record.lastLogin || null,
+          lastSeen: record.lastSeen || null,
+        });
+        migrated++;
+      }
+      // Migrate peaks to server_peaks table
+      if (this._data.peaks) {
+        const p = this._data.peaks;
+        this._db.setServerPeak('all_time_peak', String(p.allTimePeak || 0));
+        this._db.setServerPeak('all_time_peak_date', p.allTimePeakDate || '');
+        this._db.setServerPeak('today_peak', String(p.todayPeak || 0));
+        this._db.setServerPeak('today_date', p.todayDate || '');
+        this._db.setServerPeak('unique_today', JSON.stringify(p.uniqueToday || []));
+        this._db.setServerPeak('unique_day_peak', String(p.uniqueDayPeak || 0));
+        this._db.setServerPeak('unique_day_peak_date', p.uniqueDayPeakDate || '');
+        this._db.setServerPeak('yesterday_unique', String(p.yesterdayUnique || 0));
+        this._db.setServerPeak('tracking_since', this._data.trackingSince || '');
+      }
+      if (migrated > 0) {
+        console.log(`[${this._label}] Migrated ${migrated} player(s) from JSON to DB`);
+      }
+    } catch (err) {
+      console.warn(`[${this._label}] JSON→DB migration failed (non-critical):`, err.message);
+    }
+  }
+
+  /** Persist a single player's playtime to the DB. */
+  _persistPlaytime(steamId) {
+    if (!this._db || !/^\d{17}$/.test(steamId)) return;
+    const record = this._data.players[steamId];
+    if (!record) return;
+    try {
+      this._db.upsertFullPlaytime(steamId, {
+        name: record.name || '',
+        totalMs: record.totalMs || 0,
+        sessions: record.sessions || 0,
+        firstSeen: record.firstSeen || null,
+        lastLogin: record.lastLogin || null,
+        lastSeen: record.lastSeen || null,
+      });
+    } catch (err) {
+      if (!this._persistWarnLogged) {
+        console.warn(`[${this._label}] DB persist failed (will suppress further):`, err.message);
+        this._persistWarnLogged = true;
+      }
+    }
+  }
+
+  /** Persist peak data to the DB. */
+  _persistPeaks() {
+    if (!this._db || !this._data.peaks) return;
+    try {
+      const p = this._data.peaks;
+      this._db.setServerPeak('all_time_peak', String(p.allTimePeak || 0));
+      this._db.setServerPeak('all_time_peak_date', p.allTimePeakDate || '');
+      this._db.setServerPeak('today_peak', String(p.todayPeak || 0));
+      this._db.setServerPeak('today_date', p.todayDate || '');
+      this._db.setServerPeak('unique_today', JSON.stringify(p.uniqueToday || []));
+      this._db.setServerPeak('unique_day_peak', String(p.uniqueDayPeak || 0));
+      this._db.setServerPeak('unique_day_peak_date', p.uniqueDayPeakDate || '');
+      this._db.setServerPeak('yesterday_unique', String(p.yesterdayUnique || 0));
+    } catch (err) {
+      // Non-critical
+    }
+  }
+
+  /** Parse a JSON string safely, returning fallback on failure. */
+  _parseJson(str, fallback) {
+    if (!str) return fallback;
+    try { return JSON.parse(str); } catch { return fallback; }
   }
 
   // ── Private ────────────────────────────────────────────────
@@ -374,14 +511,7 @@ class PlaytimeTracker {
     this._data.players[id].totalMs += durationMs;
     this._data.players[id].lastSeen = (timestamp || new Date()).toISOString();
     this._dirty = true;
-
-    // Sync cumulative playtime to DB
-    if (this._db) {
-      try {
-        const p = this._data.players[id];
-        this._db.updatePlayerPlaytime(id, Math.floor(p.totalMs / 1000), p.sessions || 0);
-      } catch (_) { /* non-critical */ }
-    }
+    this._persistPlaytime(id);
   }
 
   _formatDuration(ms) {

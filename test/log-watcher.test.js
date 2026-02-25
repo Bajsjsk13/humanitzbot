@@ -291,3 +291,214 @@ describe('_nukeActive thread suppression', () => {
     assert.strictEqual(result, mockChannel, 'should return adminChannel directly');
   });
 });
+
+// ══════════════════════════════════════════════════════════
+// PvP kill attribution
+// ══════════════════════════════════════════════════════════
+
+describe('PvP NPC source detection', () => {
+  const LogWatcher = require('../src/log-watcher');
+
+  function createWatcher() {
+    return new LogWatcher({ on: () => {}, channels: { fetch: async () => null }, user: { id: '1' } }, {
+      config: { getToday: () => '2026-01-01', getDateLabel: () => '01 Jan 2026', logPollInterval: 999999, ftpHost: '', enablePvpKillFeed: true, pvpKillWindow: 60000 },
+    });
+  }
+
+  function cleanup(lw) {
+    clearInterval(lw._midnightCheckInterval);
+    clearInterval(lw.interval);
+  }
+
+  // --- Should be detected as NPC (not PvP) ---
+  it('rejects NPC names with underscores (blueprint convention)', () => {
+    const lw = createWatcher();
+    assert.ok(lw._isNpcDamageSource('BP_Zombie_C_12345'));
+    assert.ok(lw._isNpcDamageSource('Zombie_Normal'));
+    assert.ok(lw._isNpcDamageSource('KaiHuman_Melee'));
+    assert.ok(lw._isNpcDamageSource('Wolf_Alpha'));
+    cleanup(lw);
+  });
+
+  it('rejects known NPC type names at start of string', () => {
+    const lw = createWatcher();
+    assert.ok(lw._isNpcDamageSource('Zombie'));
+    assert.ok(lw._isNpcDamageSource('ZombieBear'));
+    assert.ok(lw._isNpcDamageSource('KaiHuman'));
+    assert.ok(lw._isNpcDamageSource('Mutant'));
+    assert.ok(lw._isNpcDamageSource('Runner'));
+    assert.ok(lw._isNpcDamageSource('Brute'));
+    assert.ok(lw._isNpcDamageSource('Pudge'));
+    assert.ok(lw._isNpcDamageSource('Dogzombie'));
+    assert.ok(lw._isNpcDamageSource('Wolf'));
+    assert.ok(lw._isNpcDamageSource('Bear'));
+    assert.ok(lw._isNpcDamageSource('Deer'));
+    assert.ok(lw._isNpcDamageSource('Snake'));
+    assert.ok(lw._isNpcDamageSource('Spider'));
+    assert.ok(lw._isNpcDamageSource('Police'));
+    assert.ok(lw._isNpcDamageSource('Military'));
+    assert.ok(lw._isNpcDamageSource('Hazmat'));
+    assert.ok(lw._isNpcDamageSource('BellyToxic'));
+    cleanup(lw);
+  });
+
+  // --- Should NOT be detected as NPC (valid PvP player names) ---
+  it('allows normal player names', () => {
+    const lw = createWatcher();
+    assert.ok(!lw._isNpcDamageSource('TestPlayer'));
+    assert.ok(!lw._isNpcDamageSource('Zuq'));
+    assert.ok(!lw._isNpcDamageSource('fabien'));
+    assert.ok(!lw._isNpcDamageSource('xXSlayerXx'));
+    assert.ok(!lw._isNpcDamageSource('[PnBy] schlumpipuh05'));
+    cleanup(lw);
+  });
+
+  it('allows player names containing NPC words mid-name', () => {
+    const lw = createWatcher();
+    // This is the key fix — old regex would wrongly flag these as NPC
+    assert.ok(!lw._isNpcDamageSource('HumanSlayer'));
+    assert.ok(!lw._isNpcDamageSource('OnlyHuman'));
+    assert.ok(!lw._isNpcDamageSource('DeadBear99'));
+    assert.ok(!lw._isNpcDamageSource('GrizzlyBear'));
+    assert.ok(!lw._isNpcDamageSource('LoneWolf'));
+    assert.ok(!lw._isNpcDamageSource('SnakeEyes'));
+    assert.ok(!lw._isNpcDamageSource('SpiderMan'));
+    assert.ok(!lw._isNpcDamageSource('DeerHunter'));
+    cleanup(lw);
+  });
+});
+
+describe('PvP damage → death correlation', () => {
+  const LogWatcher = require('../src/log-watcher');
+
+  function createWatcher() {
+    const lw = new LogWatcher({ on: () => {}, channels: { fetch: async () => null }, user: { id: '1' } }, {
+      config: { getToday: () => '2026-01-01', getDateLabel: () => '01 Jan 2026', logPollInterval: 999999, ftpHost: '', enablePvpKillFeed: true, pvpKillWindow: 60000 },
+    });
+    return lw;
+  }
+
+  it('attributes kill when death follows damage within window', () => {
+    const lw = createWatcher();
+    const t1 = new Date('2026-01-01T12:00:00Z');
+    const t2 = new Date('2026-01-01T12:00:30Z'); // 30s later
+
+    lw._recordPvpDamage('Victim', 'Killer', 50, t1);
+    const result = lw._checkPvpKill('Victim', t2);
+    assert.ok(result, 'should return kill attribution');
+    assert.equal(result.attacker, 'Killer');
+    assert.equal(result.totalDamage, 50);
+
+    clearInterval(lw._midnightCheckInterval);
+    clearInterval(lw.interval);
+  });
+
+  it('does not attribute kill when death is outside window', () => {
+    const lw = createWatcher();
+    const t1 = new Date('2026-01-01T12:00:00Z');
+    const t2 = new Date('2026-01-01T12:05:00Z'); // 5 min later
+
+    lw._recordPvpDamage('Victim', 'Killer', 50, t1);
+    const result = lw._checkPvpKill('Victim', t2);
+    assert.equal(result, null, 'should not attribute kill outside window');
+
+    clearInterval(lw._midnightCheckInterval);
+    clearInterval(lw.interval);
+  });
+
+  it('accumulates damage from same attacker', () => {
+    const lw = createWatcher();
+    const t1 = new Date('2026-01-01T12:00:00Z');
+    const t2 = new Date('2026-01-01T12:00:10Z');
+    const t3 = new Date('2026-01-01T12:00:20Z');
+
+    lw._recordPvpDamage('Victim', 'Killer', 30, t1);
+    lw._recordPvpDamage('Victim', 'Killer', 25, t2);
+    const result = lw._checkPvpKill('Victim', t3);
+    assert.ok(result);
+    assert.equal(result.totalDamage, 55);
+
+    clearInterval(lw._midnightCheckInterval);
+    clearInterval(lw.interval);
+  });
+
+  it('replaces attacker on last-hit (different attacker overwrites)', () => {
+    const lw = createWatcher();
+    const t1 = new Date('2026-01-01T12:00:00Z');
+    const t2 = new Date('2026-01-01T12:00:10Z');
+    const t3 = new Date('2026-01-01T12:00:20Z');
+
+    lw._recordPvpDamage('Victim', 'Killer1', 100, t1);
+    lw._recordPvpDamage('Victim', 'Killer2', 15, t2);
+    const result = lw._checkPvpKill('Victim', t3);
+    assert.ok(result);
+    assert.equal(result.attacker, 'Killer2', 'last-hit attacker should win');
+    assert.equal(result.totalDamage, 15, 'damage resets on new attacker');
+
+    clearInterval(lw._midnightCheckInterval);
+    clearInterval(lw.interval);
+  });
+
+  it('is case-insensitive for victim lookup', () => {
+    const lw = createWatcher();
+    const t1 = new Date('2026-01-01T12:00:00Z');
+    const t2 = new Date('2026-01-01T12:00:10Z');
+
+    lw._recordPvpDamage('TestPlayer', 'Killer', 40, t1);
+    const result = lw._checkPvpKill('testplayer', t2);
+    assert.ok(result, 'should match case-insensitively');
+
+    clearInterval(lw._midnightCheckInterval);
+    clearInterval(lw.interval);
+  });
+
+  it('returns null when no damage was tracked for victim', () => {
+    const lw = createWatcher();
+    const result = lw._checkPvpKill('Unknown', new Date());
+    assert.equal(result, null);
+
+    clearInterval(lw._midnightCheckInterval);
+    clearInterval(lw.interval);
+  });
+
+  it('cleans up after successful attribution', () => {
+    const lw = createWatcher();
+    const t1 = new Date('2026-01-01T12:00:00Z');
+    const t2 = new Date('2026-01-01T12:00:10Z');
+
+    lw._recordPvpDamage('Victim', 'Killer', 50, t1);
+    lw._checkPvpKill('Victim', t2);
+    // Second check should return null (entry consumed)
+    const second = lw._checkPvpKill('Victim', t2);
+    assert.equal(second, null, 'entry should be consumed after attribution');
+
+    clearInterval(lw._midnightCheckInterval);
+    clearInterval(lw.interval);
+  });
+
+  it('prunes old entries beyond 2× window', () => {
+    const lw = createWatcher();
+    const old = new Date('2026-01-01T10:00:00Z'); // Way old
+
+    lw._recordPvpDamage('OldVictim', 'OldKiller', 50, old);
+    assert.equal(lw._pvpDamageTracker.size, 1);
+    lw._prunePvpTracker();
+    assert.equal(lw._pvpDamageTracker.size, 0, 'old entry should be pruned');
+
+    clearInterval(lw._midnightCheckInterval);
+    clearInterval(lw.interval);
+  });
+
+  it('handles death before damage (negative elapsed)', () => {
+    const lw = createWatcher();
+    const t1 = new Date('2026-01-01T12:01:00Z');
+    const t2 = new Date('2026-01-01T12:00:00Z'); // Before damage
+
+    lw._recordPvpDamage('Victim', 'Killer', 50, t1);
+    const result = lw._checkPvpKill('Victim', t2);
+    assert.equal(result, null, 'should not attribute when death is before damage');
+
+    clearInterval(lw._midnightCheckInterval);
+    clearInterval(lw.interval);
+  });
+});

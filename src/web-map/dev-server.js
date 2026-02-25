@@ -3,7 +3,7 @@
 const express = require('express');
 const path = require('path');
 const fs = require('fs');
-const { parseSave: _parseSaveFull } = require('../save-parser');
+const { parseSave: _parseSaveFull } = require('../parsers/save-parser');
 function parseSave(buf) { return _parseSaveFull(buf).players; }
 const Client = require('ssh2-sftp-client');
 

@@ -247,6 +247,7 @@ class ActivityLog {
 
     // Format batched item events with clean names and player attribution
     for (const [, batch] of batchedItems) {
+      if (batch.isCollapsed) continue; // already formatted above
       const e = batch.event;
       const emoji = EVENT_EMOJI[e.type] || '•';
       const itemList = batch.items

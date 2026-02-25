@@ -366,7 +366,6 @@ client.once(Events.ClientReady, async (readyClient) => {
     if (config.playerStatsChannelId)   channelsToClean.add(config.playerStatsChannelId);
     if (config.panelChannelId)         channelsToClean.add(config.panelChannelId);
     if (config.activityLogChannelId)    channelsToClean.add(config.activityLogChannelId);
-    if (config.mapChannelId)            channelsToClean.add(config.mapChannelId);
     // Additional server channels (including any from removed servers still in servers.json)
     const { loadServers } = require('./multi-server');
     const servers = loadServers();
@@ -494,6 +493,7 @@ client.once(Events.ClientReady, async (readyClient) => {
     saveService = new SaveService(db, {
       sftpConfig: config.sftpConnectConfig(),
       savePath: config.ftpSavePath,
+      clanSavePath: config.ftpSavePath.replace(/SaveList\/.*$/, 'Save_ClanData.sav'),
       pollInterval: config.savePollInterval,
       agentMode: config.agentMode,
       agentNodePath: config.agentNodePath,

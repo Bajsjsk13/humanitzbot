@@ -16,7 +16,6 @@
     "changelog:json": "node scripts/generate-changelog.js --output CHANGELOG.json --format json"
   },
   "dependencies": {
-    "@napi-rs/canvas": "^0.1.94",
     "better-sqlite3": "^12.6.2",
     "discord.js": "^14.14.1",
     "dotenv": "^16.3.1",

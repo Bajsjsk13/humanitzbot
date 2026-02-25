@@ -227,6 +227,174 @@ class HumanitZDB {
         console.log(`[${this._label}] Migration v4→v5: enriched activity_log, added chat_log`);
       }
 
+      // v5 → v6: Add level, exp_current, exp_required, skills_point columns to players
+      if (fromVersion < 6) {
+        try { this._db.exec('ALTER TABLE players ADD COLUMN level INTEGER DEFAULT 0'); } catch { /* already exists */ }
+        try { this._db.exec('ALTER TABLE players ADD COLUMN exp_current REAL DEFAULT 0'); } catch { /* already exists */ }
+        try { this._db.exec('ALTER TABLE players ADD COLUMN exp_required REAL DEFAULT 0'); } catch { /* already exists */ }
+        try { this._db.exec('ALTER TABLE players ADD COLUMN skills_point INTEGER DEFAULT 0'); } catch { /* already exists */ }
+        console.log(`[${this._label}] Migration v5→v6: added level, exp_current, exp_required, skills_point`);
+      }
+
+      // v6 → v7: Item instance tracking, item movements, world drops
+      if (fromVersion < 7) {
+        this._db.exec(`
+          CREATE TABLE IF NOT EXISTS item_instances (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            fingerprint     TEXT NOT NULL,
+            item            TEXT NOT NULL,
+            durability      REAL DEFAULT 0,
+            ammo            INTEGER DEFAULT 0,
+            attachments     TEXT DEFAULT '[]',
+            cap             REAL DEFAULT 0,
+            max_dur         REAL DEFAULT 0,
+            location_type   TEXT NOT NULL DEFAULT '',
+            location_id     TEXT DEFAULT '',
+            location_slot   TEXT DEFAULT '',
+            pos_x           REAL,
+            pos_y           REAL,
+            pos_z           REAL,
+            amount          INTEGER DEFAULT 1,
+            first_seen      TEXT DEFAULT (datetime('now')),
+            last_seen       TEXT DEFAULT (datetime('now')),
+            lost            INTEGER DEFAULT 0,
+            lost_at         TEXT
+          );
+          CREATE INDEX IF NOT EXISTS idx_item_inst_fingerprint ON item_instances(fingerprint);
+          CREATE INDEX IF NOT EXISTS idx_item_inst_item ON item_instances(item);
+          CREATE INDEX IF NOT EXISTS idx_item_inst_location ON item_instances(location_type, location_id);
+          CREATE INDEX IF NOT EXISTS idx_item_inst_active ON item_instances(lost);
+        `);
+
+        this._db.exec(`
+          CREATE TABLE IF NOT EXISTS item_movements (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            instance_id     INTEGER NOT NULL REFERENCES item_instances(id),
+            item            TEXT NOT NULL,
+            from_type       TEXT DEFAULT '',
+            from_id         TEXT DEFAULT '',
+            from_slot       TEXT DEFAULT '',
+            to_type         TEXT NOT NULL,
+            to_id           TEXT NOT NULL,
+            to_slot         TEXT DEFAULT '',
+            amount          INTEGER DEFAULT 1,
+            attributed_steam_id TEXT DEFAULT '',
+            attributed_name TEXT DEFAULT '',
+            pos_x           REAL,
+            pos_y           REAL,
+            pos_z           REAL,
+            created_at      TEXT DEFAULT (datetime('now'))
+          );
+          CREATE INDEX IF NOT EXISTS idx_item_mov_instance ON item_movements(instance_id);
+          CREATE INDEX IF NOT EXISTS idx_item_mov_item ON item_movements(item);
+          CREATE INDEX IF NOT EXISTS idx_item_mov_created ON item_movements(created_at);
+          CREATE INDEX IF NOT EXISTS idx_item_mov_attributed ON item_movements(attributed_steam_id);
+        `);
+
+        this._db.exec(`
+          CREATE TABLE IF NOT EXISTS world_drops (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            type            TEXT NOT NULL,
+            actor_name      TEXT DEFAULT '',
+            item            TEXT DEFAULT '',
+            amount          INTEGER DEFAULT 0,
+            durability      REAL DEFAULT 0,
+            items           TEXT DEFAULT '[]',
+            world_loot      INTEGER DEFAULT 0,
+            placed          INTEGER DEFAULT 0,
+            spawned         INTEGER DEFAULT 0,
+            locked          INTEGER DEFAULT 0,
+            does_spawn_loot INTEGER DEFAULT 0,
+            pos_x           REAL,
+            pos_y           REAL,
+            pos_z           REAL,
+            updated_at      TEXT DEFAULT (datetime('now'))
+          );
+          CREATE INDEX IF NOT EXISTS idx_world_drops_type ON world_drops(type);
+          CREATE INDEX IF NOT EXISTS idx_world_drops_item ON world_drops(item);
+          CREATE INDEX IF NOT EXISTS idx_world_drops_pos ON world_drops(pos_x, pos_y);
+        `);
+
+        console.log(`[${this._label}] Migration v6→v7: added item_instances, item_movements, world_drops`);
+      }
+
+      // v7 → v8: Item groups (fungible item tracking) + schema updates
+      if (fromVersion < 8) {
+        this._db.exec(`
+          CREATE TABLE IF NOT EXISTS item_groups (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            fingerprint     TEXT NOT NULL,
+            item            TEXT NOT NULL,
+            durability      REAL DEFAULT 0,
+            ammo            INTEGER DEFAULT 0,
+            attachments     TEXT DEFAULT '[]',
+            cap             REAL DEFAULT 0,
+            max_dur         REAL DEFAULT 0,
+            location_type   TEXT NOT NULL DEFAULT '',
+            location_id     TEXT DEFAULT '',
+            location_slot   TEXT DEFAULT '',
+            pos_x           REAL,
+            pos_y           REAL,
+            pos_z           REAL,
+            quantity        INTEGER DEFAULT 1,
+            stack_size      INTEGER DEFAULT 1,
+            first_seen      TEXT DEFAULT (datetime('now')),
+            last_seen       TEXT DEFAULT (datetime('now')),
+            lost            INTEGER DEFAULT 0,
+            lost_at         TEXT
+          );
+          CREATE INDEX IF NOT EXISTS idx_item_grp_fingerprint ON item_groups(fingerprint);
+          CREATE INDEX IF NOT EXISTS idx_item_grp_item ON item_groups(item);
+          CREATE INDEX IF NOT EXISTS idx_item_grp_location ON item_groups(location_type, location_id);
+          CREATE INDEX IF NOT EXISTS idx_item_grp_active ON item_groups(lost);
+          CREATE UNIQUE INDEX IF NOT EXISTS idx_item_grp_unique ON item_groups(fingerprint, location_type, location_id, location_slot) WHERE lost = 0;
+        `);
+
+        // Add group_id to item_instances if not present
+        try { this._db.exec('ALTER TABLE item_instances ADD COLUMN group_id INTEGER DEFAULT NULL'); } catch { /* already exists */ }
+        try { this._db.exec('CREATE INDEX IF NOT EXISTS idx_item_inst_group ON item_instances(group_id)'); } catch { /* already exists */ }
+
+        // Add group_id + move_type to item_movements if not present
+        try { this._db.exec('ALTER TABLE item_movements ADD COLUMN group_id INTEGER DEFAULT NULL'); } catch { /* already exists */ }
+        try { this._db.exec('ALTER TABLE item_movements ADD COLUMN move_type TEXT DEFAULT \'move\''); } catch { /* already exists */ }
+        try { this._db.exec('CREATE INDEX IF NOT EXISTS idx_item_mov_group ON item_movements(group_id)'); } catch { /* already exists */ }
+
+        // Make instance_id nullable (group-level movements don't have an instance)
+        // SQLite doesn't support ALTER COLUMN, but the column already allows NULL values
+        // since the NOT NULL constraint is only enforced on INSERT
+
+        console.log(`[${this._label}] Migration v7→v8: added item_groups, group_id columns`);
+      }
+
+      // v8 → v9: DB-first player stats & playtime — add detailed log columns + server_peaks
+      if (fromVersion < 9) {
+        // New detailed log stats columns on players
+        try { this._db.exec('ALTER TABLE players ADD COLUMN log_connects INTEGER DEFAULT 0'); } catch { /* already exists */ }
+        try { this._db.exec('ALTER TABLE players ADD COLUMN log_disconnects INTEGER DEFAULT 0'); } catch { /* already exists */ }
+        try { this._db.exec('ALTER TABLE players ADD COLUMN log_admin_access INTEGER DEFAULT 0'); } catch { /* already exists */ }
+        try { this._db.exec('ALTER TABLE players ADD COLUMN log_destroyed_out INTEGER DEFAULT 0'); } catch { /* already exists */ }
+        try { this._db.exec('ALTER TABLE players ADD COLUMN log_destroyed_in INTEGER DEFAULT 0'); } catch { /* already exists */ }
+        try { this._db.exec('ALTER TABLE players ADD COLUMN log_build_items TEXT DEFAULT \'{}\''); } catch { /* already exists */ }
+        try { this._db.exec('ALTER TABLE players ADD COLUMN log_killed_by TEXT DEFAULT \'{}\''); } catch { /* already exists */ }
+        try { this._db.exec('ALTER TABLE players ADD COLUMN log_damage_detail TEXT DEFAULT \'{}\''); } catch { /* already exists */ }
+        try { this._db.exec('ALTER TABLE players ADD COLUMN log_cheat_flags TEXT DEFAULT \'[]\''); } catch { /* already exists */ }
+        // New playtime detail columns on players
+        try { this._db.exec('ALTER TABLE players ADD COLUMN playtime_first_seen TEXT'); } catch { /* already exists */ }
+        try { this._db.exec('ALTER TABLE players ADD COLUMN playtime_last_login TEXT'); } catch { /* already exists */ }
+        try { this._db.exec('ALTER TABLE players ADD COLUMN playtime_last_seen TEXT'); } catch { /* already exists */ }
+
+        // Server peaks table
+        this._db.exec(`
+          CREATE TABLE IF NOT EXISTS server_peaks (
+            key         TEXT PRIMARY KEY,
+            value       TEXT DEFAULT '',
+            updated_at  TEXT DEFAULT (datetime('now'))
+          );
+        `);
+
+        console.log(`[${this._label}] Migration v8→v9: DB-first player stats & playtime`);
+      }
+
       this._setMeta('schema_version', String(SCHEMA_VERSION));
       this._db.exec('COMMIT');
       console.log(`[${this._label}] Schema migrated to v${SCHEMA_VERSION}`);
@@ -277,7 +445,7 @@ class HumanitZDB {
         health, max_health, hunger, max_hunger, thirst, max_thirst,
         stamina, max_stamina, infection, max_infection, battery,
         fatigue, infection_buildup, well_rested, energy, hood, hypo_handle,
-        exp,
+        exp, level, exp_current, exp_required, skills_point,
         pos_x, pos_y, pos_z, rotation_yaw,
         respawn_x, respawn_y, respawn_z,
         cb_radio_cooldown, day_incremented, infection_timer,
@@ -294,7 +462,7 @@ class HumanitZDB {
         challenge_craft_melee_weapon, challenge_craft_rain_collector, challenge_craft_tablesaw,
         challenge_craft_treatment, challenge_craft_weapons_bench, challenge_craft_workbench,
         challenge_find_dog, challenge_find_heli, challenge_lockpick_suv, challenge_repair_radio,
-        custom_data, updated_at
+        custom_data, first_seen, last_seen, updated_at
       ) VALUES (
         @steam_id, @name, @male, @starting_perk, @affliction, @char_profile,
         @zeeks_killed, @headshots, @melee_kills, @gun_kills, @blast_kills,
@@ -307,7 +475,7 @@ class HumanitZDB {
         @health, @max_health, @hunger, @max_hunger, @thirst, @max_thirst,
         @stamina, @max_stamina, @infection, @max_infection, @battery,
         @fatigue, @infection_buildup, @well_rested, @energy, @hood, @hypo_handle,
-        @exp,
+        @exp, @level, @exp_current, @exp_required, @skills_point,
         @pos_x, @pos_y, @pos_z, @rotation_yaw,
         @respawn_x, @respawn_y, @respawn_z,
         @cb_radio_cooldown, @day_incremented, @infection_timer,
@@ -324,7 +492,7 @@ class HumanitZDB {
         @challenge_craft_melee_weapon, @challenge_craft_rain_collector, @challenge_craft_tablesaw,
         @challenge_craft_treatment, @challenge_craft_weapons_bench, @challenge_craft_workbench,
         @challenge_find_dog, @challenge_find_heli, @challenge_lockpick_suv, @challenge_repair_radio,
-        @custom_data, datetime('now')
+        @custom_data, datetime('now'), datetime('now'), datetime('now')
       )
       ON CONFLICT(steam_id) DO UPDATE SET
         name = excluded.name,
@@ -373,6 +541,10 @@ class HumanitZDB {
         hood = excluded.hood,
         hypo_handle = excluded.hypo_handle,
         exp = excluded.exp,
+        level = excluded.level,
+        exp_current = excluded.exp_current,
+        exp_required = excluded.exp_required,
+        skills_point = excluded.skills_point,
         pos_x = excluded.pos_x,
         pos_y = excluded.pos_y,
         pos_z = excluded.pos_z,
@@ -426,6 +598,7 @@ class HumanitZDB {
         challenge_lockpick_suv = excluded.challenge_lockpick_suv,
         challenge_repair_radio = excluded.challenge_repair_radio,
         custom_data = excluded.custom_data,
+        last_seen = datetime('now'),
         updated_at = datetime('now')
     `);
 
@@ -435,6 +608,90 @@ class HumanitZDB {
     this._stmts.getOnlinePlayers = this._db.prepare('SELECT * FROM players WHERE online = 1');
     this._stmts.setPlayerOnline = this._db.prepare('UPDATE players SET online = ?, last_seen = datetime(\'now\') WHERE steam_id = ?');
     this._stmts.setAllOffline = this._db.prepare('UPDATE players SET online = 0');
+
+    // Full log stats upsert — used by DB-first player-stats
+    this._stmts.upsertPlayerLogStats = this._db.prepare(`
+      INSERT INTO players (steam_id, name, log_deaths, log_pvp_kills, log_pvp_deaths,
+        log_builds, log_loots, log_damage_taken, log_raids_out, log_raids_in,
+        log_connects, log_disconnects, log_admin_access, log_destroyed_out, log_destroyed_in,
+        log_build_items, log_killed_by, log_damage_detail, log_cheat_flags, log_last_event,
+        first_seen, last_seen, updated_at)
+      VALUES (@steam_id, @name, @log_deaths, @log_pvp_kills, @log_pvp_deaths,
+        @log_builds, @log_loots, @log_damage_taken, @log_raids_out, @log_raids_in,
+        @log_connects, @log_disconnects, @log_admin_access, @log_destroyed_out, @log_destroyed_in,
+        @log_build_items, @log_killed_by, @log_damage_detail, @log_cheat_flags, @log_last_event,
+        datetime('now'), datetime('now'), datetime('now'))
+      ON CONFLICT(steam_id) DO UPDATE SET
+        name = CASE WHEN excluded.name != '' THEN excluded.name ELSE players.name END,
+        log_deaths = excluded.log_deaths,
+        log_pvp_kills = excluded.log_pvp_kills,
+        log_pvp_deaths = excluded.log_pvp_deaths,
+        log_builds = excluded.log_builds,
+        log_loots = excluded.log_loots,
+        log_damage_taken = excluded.log_damage_taken,
+        log_raids_out = excluded.log_raids_out,
+        log_raids_in = excluded.log_raids_in,
+        log_connects = excluded.log_connects,
+        log_disconnects = excluded.log_disconnects,
+        log_admin_access = excluded.log_admin_access,
+        log_destroyed_out = excluded.log_destroyed_out,
+        log_destroyed_in = excluded.log_destroyed_in,
+        log_build_items = excluded.log_build_items,
+        log_killed_by = excluded.log_killed_by,
+        log_damage_detail = excluded.log_damage_detail,
+        log_cheat_flags = excluded.log_cheat_flags,
+        log_last_event = excluded.log_last_event,
+        updated_at = datetime('now')
+    `);
+
+    // Full playtime upsert — used by DB-first playtime-tracker
+    this._stmts.upsertPlayerPlaytime = this._db.prepare(`
+      INSERT INTO players (steam_id, name, playtime_seconds, session_count,
+        playtime_first_seen, playtime_last_login, playtime_last_seen,
+        first_seen, last_seen, updated_at)
+      VALUES (@steam_id, @name, @playtime_seconds, @session_count,
+        @playtime_first_seen, @playtime_last_login, @playtime_last_seen,
+        datetime('now'), datetime('now'), datetime('now'))
+      ON CONFLICT(steam_id) DO UPDATE SET
+        name = CASE WHEN excluded.name != '' THEN excluded.name ELSE players.name END,
+        playtime_seconds = excluded.playtime_seconds,
+        session_count = excluded.session_count,
+        playtime_first_seen = excluded.playtime_first_seen,
+        playtime_last_login = excluded.playtime_last_login,
+        playtime_last_seen = excluded.playtime_last_seen,
+        updated_at = datetime('now')
+    `);
+
+    // Get all player log stats (for loading into in-memory cache)
+    this._stmts.getAllPlayerLogStats = this._db.prepare(`
+      SELECT steam_id, name, log_deaths, log_pvp_kills, log_pvp_deaths,
+        log_builds, log_loots, log_damage_taken, log_raids_out, log_raids_in,
+        log_connects, log_disconnects, log_admin_access, log_destroyed_out, log_destroyed_in,
+        log_build_items, log_killed_by, log_damage_detail, log_cheat_flags, log_last_event
+      FROM players
+      WHERE log_deaths > 0 OR log_pvp_kills > 0 OR log_builds > 0
+        OR log_loots > 0 OR log_raids_out > 0 OR log_connects > 0
+        OR log_admin_access > 0
+    `);
+
+    // Get all player playtime (for loading into in-memory cache)
+    this._stmts.getAllPlayerPlaytime = this._db.prepare(`
+      SELECT steam_id, name, playtime_seconds, session_count,
+        playtime_first_seen, playtime_last_login, playtime_last_seen
+      FROM players
+      WHERE playtime_seconds > 0 OR session_count > 0
+    `);
+
+    // Server peaks
+    this._stmts.setServerPeak = this._db.prepare(
+      'INSERT OR REPLACE INTO server_peaks (key, value, updated_at) VALUES (?, ?, datetime(\'now\'))'
+    );
+    this._stmts.getServerPeak = this._db.prepare(
+      'SELECT value FROM server_peaks WHERE key = ?'
+    );
+    this._stmts.getAllServerPeaks = this._db.prepare(
+      'SELECT * FROM server_peaks'
+    );
 
     // Leaderboards
     this._stmts.topKillers = this._db.prepare('SELECT steam_id, name, lifetime_kills, lifetime_headshots, lifetime_melee_kills, lifetime_gun_kills FROM players ORDER BY lifetime_kills DESC LIMIT ?');
@@ -507,6 +764,136 @@ class HumanitZDB {
     // Loot actors
     this._stmts.clearLootActors = this._db.prepare('DELETE FROM loot_actors');
     this._stmts.insertLootActor = this._db.prepare('INSERT INTO loot_actors (name, type, pos_x, pos_y, pos_z, items, updated_at) VALUES (?, ?, ?, ?, ?, ?, datetime(\'now\'))');
+
+    // Item instances (fingerprint tracking)
+    this._stmts.insertItemInstance = this._db.prepare(`
+      INSERT INTO item_instances (fingerprint, item, durability, ammo, attachments, cap, max_dur, location_type, location_id, location_slot, pos_x, pos_y, pos_z, amount, group_id, first_seen, last_seen, lost)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'), 0)
+    `);
+    this._stmts.updateItemInstanceLocation = this._db.prepare(`
+      UPDATE item_instances SET location_type = ?, location_id = ?, location_slot = ?, pos_x = ?, pos_y = ?, pos_z = ?, amount = ?, group_id = ?, last_seen = datetime('now'), lost = 0, lost_at = NULL WHERE id = ?
+    `);
+    this._stmts.markItemInstanceLost = this._db.prepare(`
+      UPDATE item_instances SET lost = 1, lost_at = datetime('now') WHERE id = ?
+    `);
+    this._stmts.markAllItemInstancesLost = this._db.prepare(`
+      UPDATE item_instances SET lost = 1, lost_at = datetime('now') WHERE lost = 0
+    `);
+    this._stmts.touchItemInstance = this._db.prepare(`
+      UPDATE item_instances SET last_seen = datetime('now'), lost = 0 WHERE id = ?
+    `);
+    this._stmts.findItemInstanceByFingerprint = this._db.prepare(
+      'SELECT * FROM item_instances WHERE fingerprint = ? AND lost = 0 LIMIT 1'
+    );
+    this._stmts.findItemInstancesByFingerprint = this._db.prepare(
+      'SELECT * FROM item_instances WHERE fingerprint = ? AND lost = 0'
+    );
+    this._stmts.findItemInstanceById = this._db.prepare(
+      'SELECT * FROM item_instances WHERE id = ?'
+    );
+    this._stmts.getActiveItemInstances = this._db.prepare(
+      'SELECT * FROM item_instances WHERE lost = 0 ORDER BY item, location_type'
+    );
+    this._stmts.getItemInstancesByItem = this._db.prepare(
+      'SELECT * FROM item_instances WHERE item = ? AND lost = 0 ORDER BY location_type'
+    );
+    this._stmts.getItemInstancesByLocation = this._db.prepare(
+      'SELECT * FROM item_instances WHERE location_type = ? AND location_id = ? AND lost = 0'
+    );
+    this._stmts.getItemInstanceCount = this._db.prepare(
+      'SELECT COUNT(*) as count FROM item_instances WHERE lost = 0'
+    );
+    this._stmts.searchItemInstances = this._db.prepare(
+      'SELECT * FROM item_instances WHERE item LIKE ? AND lost = 0 ORDER BY item LIMIT ?'
+    );
+    this._stmts.purgeOldLostItems = this._db.prepare(
+      'DELETE FROM item_instances WHERE lost = 1 AND lost_at < datetime(\'now\', ?)'
+    );
+    this._stmts.getItemInstancesByGroup = this._db.prepare(
+      'SELECT * FROM item_instances WHERE group_id = ? AND lost = 0'
+    );
+
+    // Item groups (fungible item tracking)
+    this._stmts.insertItemGroup = this._db.prepare(`
+      INSERT INTO item_groups (fingerprint, item, durability, ammo, attachments, cap, max_dur, location_type, location_id, location_slot, pos_x, pos_y, pos_z, quantity, stack_size, first_seen, last_seen, lost)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'), 0)
+    `);
+    this._stmts.updateItemGroupQuantity = this._db.prepare(`
+      UPDATE item_groups SET quantity = ?, last_seen = datetime('now'), lost = 0, lost_at = NULL WHERE id = ?
+    `);
+    this._stmts.updateItemGroupLocation = this._db.prepare(`
+      UPDATE item_groups SET location_type = ?, location_id = ?, location_slot = ?, pos_x = ?, pos_y = ?, pos_z = ?, quantity = ?, last_seen = datetime('now'), lost = 0, lost_at = NULL WHERE id = ?
+    `);
+    this._stmts.markItemGroupLost = this._db.prepare(`
+      UPDATE item_groups SET lost = 1, lost_at = datetime('now') WHERE id = ?
+    `);
+    this._stmts.markAllItemGroupsLost = this._db.prepare(`
+      UPDATE item_groups SET lost = 1, lost_at = datetime('now') WHERE lost = 0
+    `);
+    this._stmts.touchItemGroup = this._db.prepare(`
+      UPDATE item_groups SET last_seen = datetime('now'), lost = 0 WHERE id = ?
+    `);
+    this._stmts.findActiveGroupByLocation = this._db.prepare(
+      'SELECT * FROM item_groups WHERE fingerprint = ? AND location_type = ? AND location_id = ? AND location_slot = ? AND lost = 0 LIMIT 1'
+    );
+    this._stmts.findActiveGroupsByFingerprint = this._db.prepare(
+      'SELECT * FROM item_groups WHERE fingerprint = ? AND lost = 0'
+    );
+    this._stmts.findItemGroupById = this._db.prepare(
+      'SELECT * FROM item_groups WHERE id = ?'
+    );
+    this._stmts.getActiveItemGroups = this._db.prepare(
+      'SELECT * FROM item_groups WHERE lost = 0 ORDER BY item, location_type'
+    );
+    this._stmts.getItemGroupsByItem = this._db.prepare(
+      'SELECT * FROM item_groups WHERE item = ? AND lost = 0 ORDER BY location_type'
+    );
+    this._stmts.getItemGroupsByLocation = this._db.prepare(
+      'SELECT * FROM item_groups WHERE location_type = ? AND location_id = ? AND lost = 0'
+    );
+    this._stmts.getItemGroupCount = this._db.prepare(
+      'SELECT COUNT(*) as count FROM item_groups WHERE lost = 0'
+    );
+    this._stmts.searchItemGroups = this._db.prepare(
+      'SELECT * FROM item_groups WHERE item LIKE ? AND lost = 0 ORDER BY item LIMIT ?'
+    );
+    this._stmts.purgeOldLostGroups = this._db.prepare(
+      'DELETE FROM item_groups WHERE lost = 1 AND lost_at < datetime(\'now\', ?)'
+    );
+
+    // Item movements (chain-of-custody)
+    this._stmts.insertItemMovement = this._db.prepare(`
+      INSERT INTO item_movements (instance_id, group_id, move_type, item, from_type, from_id, from_slot, to_type, to_id, to_slot, amount, attributed_steam_id, attributed_name, pos_x, pos_y, pos_z)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    this._stmts.getItemMovements = this._db.prepare(
+      'SELECT * FROM item_movements WHERE instance_id = ? ORDER BY created_at ASC'
+    );
+    this._stmts.getItemMovementsByGroup = this._db.prepare(
+      'SELECT * FROM item_movements WHERE group_id = ? ORDER BY created_at ASC'
+    );
+    this._stmts.getRecentItemMovements = this._db.prepare(
+      'SELECT * FROM item_movements ORDER BY created_at DESC LIMIT ?'
+    );
+    this._stmts.getItemMovementsByPlayer = this._db.prepare(
+      'SELECT * FROM item_movements WHERE attributed_steam_id = ? ORDER BY created_at DESC LIMIT ?'
+    );
+    this._stmts.getItemMovementsByLocation = this._db.prepare(
+      'SELECT * FROM item_movements WHERE (from_type = ? AND from_id = ?) OR (to_type = ? AND to_id = ?) ORDER BY created_at DESC LIMIT ?'
+    );
+    this._stmts.purgeOldMovements = this._db.prepare(
+      'DELETE FROM item_movements WHERE created_at < datetime(\'now\', ?)'
+    );
+
+    // World drops
+    this._stmts.clearWorldDrops = this._db.prepare('DELETE FROM world_drops');
+    this._stmts.insertWorldDrop = this._db.prepare(`
+      INSERT INTO world_drops (type, actor_name, item, amount, durability, items, world_loot, placed, spawned, locked, does_spawn_loot, pos_x, pos_y, pos_z)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    this._stmts.getAllWorldDrops = this._db.prepare('SELECT * FROM world_drops ORDER BY type, item');
+    this._stmts.getWorldDropsByType = this._db.prepare('SELECT * FROM world_drops WHERE type = ? ORDER BY item');
+    this._stmts.getWorldDropsWithItems = this._db.prepare('SELECT * FROM world_drops WHERE (item != \'\' OR items != \'[]\') ORDER BY type');
 
     // Quests
     this._stmts.clearQuests = this._db.prepare('DELETE FROM quests');
@@ -663,15 +1050,15 @@ class HumanitZDB {
       fish_caught: data.fishCaught || 0,
       fish_caught_pike: data.fishCaughtPike || 0,
       health: data.health || 0,
-      max_health: data.maxHealth || 0,
+      max_health: data.maxHealth || 100,
       hunger: data.hunger || 0,
-      max_hunger: data.maxHunger || 0,
+      max_hunger: data.maxHunger || 100,
       thirst: data.thirst || 0,
-      max_thirst: data.maxThirst || 0,
+      max_thirst: data.maxThirst || 100,
       stamina: data.stamina || 0,
-      max_stamina: data.maxStamina || 0,
+      max_stamina: data.maxStamina || 100,
       infection: data.infection || 0,
-      max_infection: data.maxInfection || 0,
+      max_infection: data.maxInfection || 100,
       battery: data.battery || 100,
       fatigue: data.fatigue || 0,
       infection_buildup: data.infectionBuildup || 0,
@@ -680,6 +1067,10 @@ class HumanitZDB {
       hood: data.hood || 0,
       hypo_handle: data.hypoHandle || 0,
       exp: data.exp || 0,
+      level: data.level || 0,
+      exp_current: data.expCurrent || 0,
+      exp_required: data.expRequired || 0,
+      skills_point: data.skillPoints || 0,
       pos_x: data.x ?? null,
       pos_y: data.y ?? null,
       pos_z: data.z ?? null,
@@ -696,7 +1087,7 @@ class HumanitZDB {
       building_recipes: _json(data.buildingRecipes),
       unlocked_professions: _json(data.unlockedProfessions),
       unlocked_skills: _json(data.unlockedSkills),
-      skills_data: _json(data.skillsData),
+      skills_data: _json(data.skillTree || data.skillsData),
       inventory: _json(data.inventory),
       equipment: _json(data.equipment),
       quick_slots: _json(data.quickSlots),
@@ -764,34 +1155,6 @@ class HumanitZDB {
     this._stmts.setAllOffline.run();
   }
 
-  /** Update log-based stats for a player. */
-  updatePlayerLogStats(steamId, logData) {
-    const existing = this._stmts.getPlayer.get(steamId);
-    if (!existing) return;
-
-    this._db.prepare(`
-      UPDATE players SET
-        log_deaths = ?, log_pvp_kills = ?, log_pvp_deaths = ?,
-        log_builds = ?, log_loots = ?, log_damage_taken = ?,
-        log_raids_out = ?, log_raids_in = ?, log_last_event = ?,
-        updated_at = datetime('now')
-      WHERE steam_id = ?
-    `).run(
-      logData.deaths || 0, logData.pvpKills || 0, logData.pvpDeaths || 0,
-      logData.builds || 0, logData.loots || 0, logData.damageTaken || 0,
-      logData.raidsOut || 0, logData.raidsIn || 0, logData.lastEvent || null,
-      steamId
-    );
-  }
-
-  /** Update playtime for a player. */
-  updatePlayerPlaytime(steamId, playtimeSeconds, sessionCount) {
-    this._db.prepare(`
-      UPDATE players SET playtime_seconds = ?, session_count = ?, updated_at = datetime('now')
-      WHERE steam_id = ?
-    `).run(playtimeSeconds, sessionCount, steamId);
-  }
-
   /** Update kill tracker JSON for a player. */
   updateKillTracker(steamId, killData) {
     this._db.prepare('UPDATE players SET kill_tracker = ?, updated_at = datetime(\'now\') WHERE steam_id = ?')
@@ -802,6 +1165,94 @@ class HumanitZDB {
   updatePlayerName(steamId, name, nameHistory) {
     this._db.prepare('UPDATE players SET name = ?, name_history = ?, updated_at = datetime(\'now\') WHERE steam_id = ?')
       .run(name, JSON.stringify(nameHistory || []), steamId);
+  }
+
+  /**
+   * Upsert full player log stats (DB-first — called by player-stats.js on every record call).
+   * Creates the player row if it doesn't exist.
+   */
+  upsertFullLogStats(steamId, data) {
+    this._stmts.upsertPlayerLogStats.run({
+      steam_id: steamId,
+      name: data.name || '',
+      log_deaths: data.deaths || 0,
+      log_pvp_kills: data.pvpKills || 0,
+      log_pvp_deaths: data.pvpDeaths || 0,
+      log_builds: data.builds || 0,
+      log_loots: data.containersLooted || 0,
+      log_damage_taken: data.damageTakenTotal || 0,
+      log_raids_out: data.raidsOut || 0,
+      log_raids_in: data.raidsIn || 0,
+      log_connects: data.connects || 0,
+      log_disconnects: data.disconnects || 0,
+      log_admin_access: data.adminAccess || 0,
+      log_destroyed_out: data.destroyedOut || 0,
+      log_destroyed_in: data.destroyedIn || 0,
+      log_build_items: JSON.stringify(data.buildItems || {}),
+      log_killed_by: JSON.stringify(data.killedBy || {}),
+      log_damage_detail: JSON.stringify(data.damageTaken || {}),
+      log_cheat_flags: JSON.stringify(data.cheatFlags || []),
+      log_last_event: data.lastEvent || null,
+    });
+  }
+
+  /**
+   * Get all player log stats from DB (for loading into PlayerStats cache on startup).
+   * Returns an array of objects matching the DB columns.
+   */
+  getAllPlayerLogStats() {
+    return this._stmts.getAllPlayerLogStats.all();
+  }
+
+  /**
+   * Upsert full playtime data (DB-first — called by playtime-tracker.js).
+   * Creates the player row if it doesn't exist.
+   */
+  upsertFullPlaytime(steamId, data) {
+    this._stmts.upsertPlayerPlaytime.run({
+      steam_id: steamId,
+      name: data.name || '',
+      playtime_seconds: Math.floor((data.totalMs || 0) / 1000),
+      session_count: data.sessions || 0,
+      playtime_first_seen: data.firstSeen || null,
+      playtime_last_login: data.lastLogin || null,
+      playtime_last_seen: data.lastSeen || null,
+    });
+  }
+
+  /**
+   * Get all player playtime from DB (for loading into PlaytimeTracker cache on startup).
+   */
+  getAllPlayerPlaytime() {
+    return this._stmts.getAllPlayerPlaytime.all();
+  }
+
+  /**
+   * Set a server peak value (e.g. all_time_peak, today_peak, unique_today).
+   */
+  setServerPeak(key, value) {
+    const stored = (value !== null && typeof value === 'object')
+      ? JSON.stringify(value)
+      : String(value ?? '');
+    this._stmts.setServerPeak.run(key, stored);
+  }
+
+  /**
+   * Get a server peak value.
+   */
+  getServerPeak(key) {
+    const r = this._stmts.getServerPeak.get(key);
+    return r ? r.value : null;
+  }
+
+  /**
+   * Get all server peak values as a flat object.
+   */
+  getAllServerPeaks() {
+    const rows = this._stmts.getAllServerPeaks.all();
+    const result = {};
+    for (const r of rows) result[r.key] = r.value;
+    return result;
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -1016,7 +1467,10 @@ class HumanitZDB {
   //  World state
   // ═══════════════════════════════════════════════════════════════════════════
 
-  setWorldState(key, value) { this._stmts.setWorldState.run(key, String(value)); }
+  setWorldState(key, value) {
+    const stored = (value !== null && typeof value === 'object') ? JSON.stringify(value) : String(value);
+    this._stmts.setWorldState.run(key, stored);
+  }
   getWorldState(key) { const r = this._stmts.getWorldState.get(key); return r ? r.value : null; }
   getAllWorldState() {
     const rows = this._stmts.getAllWorldState.all();
@@ -1176,6 +1630,287 @@ class HumanitZDB {
     });
     insert(lootActors);
   }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  Item instances (fingerprint tracking)
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Create a new item instance and return its row id.
+   * @param {object} item - { fingerprint, item, durability, ammo, attachments, cap, maxDur, locationType, locationId, locationSlot, x, y, z, amount }
+   * @returns {number} The auto-incremented ID of the new instance
+   */
+  /**
+   * Create a new item instance and return its row id.
+   * @param {object} item - { fingerprint, item, durability, ammo, attachments, cap, maxDur, locationType, locationId, locationSlot, x, y, z, amount, groupId }
+   * @returns {number} The auto-incremented ID of the new instance
+   */
+  createItemInstance(item) {
+    const result = this._stmts.insertItemInstance.run(
+      item.fingerprint, item.item, item.durability || 0, item.ammo || 0,
+      _json(item.attachments), item.cap || 0, item.maxDur || 0,
+      item.locationType, item.locationId || '', item.locationSlot || '',
+      item.x ?? null, item.y ?? null, item.z ?? null,
+      item.amount || 1, item.groupId ?? null
+    );
+    return result.lastInsertRowid;
+  }
+
+  /**
+   * Move an item instance to a new location and record the movement.
+   * @param {number} instanceId - item_instances.id
+   * @param {object} to - { locationType, locationId, locationSlot, x, y, z, amount, groupId }
+   * @param {object} [attribution] - { steamId, name } of the player who caused the move
+   * @param {string} [moveType='move'] - movement type
+   */
+  moveItemInstance(instanceId, to, attribution, moveType = 'move') {
+    const old = this._stmts.findItemInstanceById.get(instanceId);
+    if (!old) return;
+
+    // Update location
+    this._stmts.updateItemInstanceLocation.run(
+      to.locationType, to.locationId || '', to.locationSlot || '',
+      to.x ?? null, to.y ?? null, to.z ?? null,
+      to.amount ?? old.amount, to.groupId ?? null,
+      instanceId
+    );
+
+    // Record movement
+    this._stmts.insertItemMovement.run(
+      instanceId, null, moveType, old.item,
+      old.location_type, old.location_id, old.location_slot,
+      to.locationType, to.locationId || '', to.locationSlot || '',
+      to.amount ?? old.amount,
+      attribution?.steamId || '', attribution?.name || '',
+      to.x ?? null, to.y ?? null, to.z ?? null
+    );
+  }
+
+  /**
+   * Mark an item instance as lost (no longer found in save data).
+   */
+  markItemLost(instanceId) {
+    this._stmts.markItemInstanceLost.run(instanceId);
+  }
+
+  /**
+   * Mark all active instances as lost (used before reconciliation).
+   */
+  markAllItemsLost() {
+    this._stmts.markAllItemInstancesLost.run();
+  }
+
+  /**
+   * Touch an instance (update last_seen, clear lost flag).
+   */
+  touchItemInstance(instanceId) {
+    this._stmts.touchItemInstance.run(instanceId);
+  }
+
+  findItemByFingerprint(fingerprint) {
+    return this._stmts.findItemInstanceByFingerprint.get(fingerprint);
+  }
+
+  findItemsByFingerprint(fingerprint) {
+    return this._stmts.findItemInstancesByFingerprint.all(fingerprint);
+  }
+
+  getItemInstance(id) {
+    return this._stmts.findItemInstanceById.get(id);
+  }
+
+  getActiveItemInstances() {
+    return this._stmts.getActiveItemInstances.all();
+  }
+
+  getItemInstancesByItem(item) {
+    return this._stmts.getItemInstancesByItem.all(item);
+  }
+
+  getItemInstancesByLocation(locationType, locationId) {
+    return this._stmts.getItemInstancesByLocation.all(locationType, locationId);
+  }
+
+  getItemInstanceCount() {
+    return this._stmts.getItemInstanceCount.get().count;
+  }
+
+  searchItemInstances(query, limit = 50) {
+    return this._stmts.searchItemInstances.all(`%${query}%`, limit);
+  }
+
+  purgeOldLostItems(age = '-30 days') {
+    return this._stmts.purgeOldLostItems.run(age);
+  }
+
+  getItemInstancesByGroup(groupId) {
+    return this._stmts.getItemInstancesByGroup.all(groupId);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  Item groups (fungible item tracking)
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Create or update an item group at a specific location.
+   * If a group with the same fingerprint+location already exists (active), update its quantity.
+   * Otherwise create a new group.
+   * @returns {{ id: number, created: boolean }}
+   */
+  upsertItemGroup(group) {
+    const existing = this._stmts.findActiveGroupByLocation.get(
+      group.fingerprint, group.locationType, group.locationId || '', group.locationSlot || ''
+    );
+    if (existing) {
+      this._stmts.updateItemGroupQuantity.run(group.quantity, existing.id);
+      return { id: existing.id, created: false };
+    }
+    const result = this._stmts.insertItemGroup.run(
+      group.fingerprint, group.item, group.durability || 0, group.ammo || 0,
+      _json(group.attachments), group.cap || 0, group.maxDur || 0,
+      group.locationType, group.locationId || '', group.locationSlot || '',
+      group.x ?? null, group.y ?? null, group.z ?? null,
+      group.quantity || 1, group.stackSize || 1
+    );
+    return { id: Number(result.lastInsertRowid), created: true };
+  }
+
+  updateItemGroupQuantity(groupId, quantity) {
+    this._stmts.updateItemGroupQuantity.run(quantity, groupId);
+  }
+
+  updateItemGroupLocation(groupId, to) {
+    this._stmts.updateItemGroupLocation.run(
+      to.locationType, to.locationId || '', to.locationSlot || '',
+      to.x ?? null, to.y ?? null, to.z ?? null,
+      to.quantity ?? 1, groupId
+    );
+  }
+
+  markItemGroupLost(groupId) {
+    this._stmts.markItemGroupLost.run(groupId);
+  }
+
+  markAllItemGroupsLost() {
+    this._stmts.markAllItemGroupsLost.run();
+  }
+
+  touchItemGroup(groupId) {
+    this._stmts.touchItemGroup.run(groupId);
+  }
+
+  findActiveGroupByLocation(fingerprint, locationType, locationId, locationSlot) {
+    return this._stmts.findActiveGroupByLocation.get(fingerprint, locationType, locationId || '', locationSlot || '');
+  }
+
+  findActiveGroupsByFingerprint(fingerprint) {
+    return this._stmts.findActiveGroupsByFingerprint.all(fingerprint);
+  }
+
+  getItemGroup(id) {
+    return this._stmts.findItemGroupById.get(id);
+  }
+
+  getActiveItemGroups() {
+    return this._stmts.getActiveItemGroups.all();
+  }
+
+  getItemGroupsByItem(item) {
+    return this._stmts.getItemGroupsByItem.all(item);
+  }
+
+  getItemGroupsByLocation(locationType, locationId) {
+    return this._stmts.getItemGroupsByLocation.all(locationType, locationId);
+  }
+
+  getItemGroupCount() {
+    return this._stmts.getItemGroupCount.get().count;
+  }
+
+  searchItemGroups(query, limit = 50) {
+    return this._stmts.searchItemGroups.all(`%${query}%`, limit);
+  }
+
+  purgeOldLostGroups(age = '-30 days') {
+    return this._stmts.purgeOldLostGroups.run(age);
+  }
+
+  /**
+   * Record a group-level movement (split, merge, transfer, adjust).
+   * @param {object} opts
+   * @param {number} [opts.instanceId] - individual instance (for splits)
+   * @param {number} [opts.groupId] - group id
+   * @param {string} opts.moveType - 'group_split', 'group_merge', 'group_transfer', 'group_adjust'
+   * @param {string} opts.item - item name
+   * @param {object} opts.from - { type, id, slot }
+   * @param {object} opts.to - { type, id, slot }
+   * @param {number} opts.amount - how many items moved
+   * @param {object} [opts.attribution] - { steamId, name }
+   * @param {{ x?: number, y?: number, z?: number }} [opts.pos] - position
+   */
+  recordGroupMovement(opts) {
+    this._stmts.insertItemMovement.run(
+      opts.instanceId ?? null, opts.groupId ?? null, opts.moveType,
+      opts.item,
+      opts.from?.type || '', opts.from?.id || '', opts.from?.slot || '',
+      opts.to?.type || '', opts.to?.id || '', opts.to?.slot || '',
+      opts.amount || 1,
+      opts.attribution?.steamId || '', opts.attribution?.name || '',
+      opts.pos?.x ?? null, opts.pos?.y ?? null, opts.pos?.z ?? null
+    );
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  Item movements (chain-of-custody)
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  getItemMovements(instanceId) {
+    return this._stmts.getItemMovements.all(instanceId);
+  }
+
+  getItemMovementsByGroup(groupId) {
+    return this._stmts.getItemMovementsByGroup.all(groupId);
+  }
+
+  getRecentItemMovements(limit = 50) {
+    return this._stmts.getRecentItemMovements.all(limit);
+  }
+
+  getItemMovementsByPlayer(steamId, limit = 50) {
+    return this._stmts.getItemMovementsByPlayer.all(steamId, limit);
+  }
+
+  getItemMovementsByLocation(locationType, locationId, limit = 50) {
+    return this._stmts.getItemMovementsByLocation.all(locationType, locationId, locationType, locationId, limit);
+  }
+
+  purgeOldMovements(age = '-30 days') {
+    return this._stmts.purgeOldMovements.run(age);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  World drops (LODPickups, dropped backpacks, global containers)
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  replaceWorldDrops(drops) {
+    const insert = this._db.transaction((items) => {
+      this._stmts.clearWorldDrops.run();
+      for (const d of items) {
+        this._stmts.insertWorldDrop.run(
+          d.type, d.actorName || '', d.item || '', d.amount || 0,
+          d.durability || 0, _json(d.items),
+          d.worldLoot ? 1 : 0, d.placed ? 1 : 0, d.spawned ? 1 : 0,
+          d.locked ? 1 : 0, d.doesSpawnLoot ? 1 : 0,
+          d.x ?? null, d.y ?? null, d.z ?? null
+        );
+      }
+    });
+    insert(drops);
+  }
+
+  getAllWorldDrops() { return this._stmts.getAllWorldDrops.all(); }
+  getWorldDropsByType(type) { return this._stmts.getWorldDropsByType.all(type); }
+  getWorldDropsWithItems() { return this._stmts.getWorldDropsWithItems.all(); }
 
   // ═══════════════════════════════════════════════════════════════════════════
   //  Quests
@@ -1423,7 +2158,8 @@ class HumanitZDB {
       // World state
       if (parsed.worldState) {
         for (const [key, value] of Object.entries(parsed.worldState)) {
-          this._stmts.setWorldState.run(key, String(value));
+          const stored = (value !== null && typeof value === 'object') ? JSON.stringify(value) : String(value);
+          this._stmts.setWorldState.run(key, stored);
         }
       }
 

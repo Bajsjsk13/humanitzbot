@@ -84,3 +84,193 @@ describe('LOADING_TIPS', () => {
     }
   });
 });
+
+// ─── New maps from DT files ────────────────────────────────────────────────
+
+describe('ITEM_DATABASE', () => {
+  it('has 718 items', () => {
+    assert.equal(Object.keys(gameData.ITEM_DATABASE).length, 718);
+  });
+
+  it('each item has name and type', () => {
+    for (const [id, item] of Object.entries(gameData.ITEM_DATABASE)) {
+      assert.ok(item.name, `${id} missing name`);
+      assert.ok(typeof item.type === 'string', `${id} missing type`);
+    }
+  });
+
+  it('Desert Hawk is a Pistol', () => {
+    assert.equal(gameData.ITEM_DATABASE['DesertEagle'].name, 'Desert Hawk');
+    assert.equal(gameData.ITEM_DATABASE['DesertEagle'].type, 'Pistol');
+  });
+
+  it('AK47 is Ranged', () => {
+    assert.equal(gameData.ITEM_DATABASE['AK47'].type, 'Ranged');
+  });
+
+  it('Bandage is Medical', () => {
+    assert.equal(gameData.ITEM_DATABASE['Bandage'].type, 'Medical');
+  });
+});
+
+describe('ITEM_NAMES', () => {
+  it('has same count as ITEM_DATABASE', () => {
+    assert.equal(Object.keys(gameData.ITEM_NAMES).length, Object.keys(gameData.ITEM_DATABASE).length);
+  });
+
+  it('maps row name to display name', () => {
+    assert.equal(gameData.ITEM_NAMES['DesertEagle'], 'Desert Hawk');
+    assert.equal(gameData.ITEM_NAMES['AK47'], 'AK47');
+  });
+});
+
+describe('BUILDING_NAMES', () => {
+  it('has 122 buildings', () => {
+    assert.equal(Object.keys(gameData.BUILDING_NAMES).length, 122);
+  });
+
+  it('each building has name and health', () => {
+    for (const [id, b] of Object.entries(gameData.BUILDING_NAMES)) {
+      assert.ok(b.name, `${id} missing name`);
+      assert.ok(typeof b.health === 'number', `${id} missing health`);
+    }
+  });
+
+  it('WaterCatcher is Rain Collector', () => {
+    assert.equal(gameData.BUILDING_NAMES['WaterCatcher'].name, 'Rain Collector');
+  });
+});
+
+describe('VEHICLE_NAMES', () => {
+  it('has 27 vehicles', () => {
+    assert.equal(Object.keys(gameData.VEHICLE_NAMES).length, 27);
+  });
+
+  it('each value is a string', () => {
+    for (const [id, name] of Object.entries(gameData.VEHICLE_NAMES)) {
+      assert.ok(typeof name === 'string' && name.length > 0, `${id} should have a name`);
+    }
+  });
+});
+
+describe('CRAFTING_RECIPES', () => {
+  it('has 154 recipes', () => {
+    assert.equal(Object.keys(gameData.CRAFTING_RECIPES).length, 154);
+  });
+
+  it('each recipe has name and station', () => {
+    for (const [id, r] of Object.entries(gameData.CRAFTING_RECIPES)) {
+      assert.ok(r.name, `${id} missing name`);
+      assert.ok(typeof r.station === 'string', `${id} missing station`);
+      assert.ok(Array.isArray(r.ingredients), `${id} ingredients should be array`);
+    }
+  });
+});
+
+describe('LORE_ENTRIES', () => {
+  it('has 12 entries', () => {
+    assert.equal(Object.keys(gameData.LORE_ENTRIES).length, 12);
+  });
+
+  it('each entry has title and type', () => {
+    for (const [id, l] of Object.entries(gameData.LORE_ENTRIES)) {
+      assert.ok(l.title, `${id} missing title`);
+      assert.ok(l.type, `${id} missing type`);
+    }
+  });
+});
+
+describe('QUEST_DATA', () => {
+  it('has 18 quests', () => {
+    assert.equal(Object.keys(gameData.QUEST_DATA).length, 18);
+  });
+
+  it('each quest has name', () => {
+    for (const [id, q] of Object.entries(gameData.QUEST_DATA)) {
+      assert.ok(q.name, `${id} missing name`);
+    }
+  });
+});
+
+describe('SPAWN_LOCATIONS', () => {
+  it('has 10 locations', () => {
+    assert.equal(Object.keys(gameData.SPAWN_LOCATIONS).length, 10);
+  });
+});
+
+describe('AMMO_DAMAGE', () => {
+  it('has 8 ammo types', () => {
+    assert.equal(Object.keys(gameData.AMMO_DAMAGE).length, 8);
+  });
+
+  it('each has baseDamage and headDamage', () => {
+    for (const [id, a] of Object.entries(gameData.AMMO_DAMAGE)) {
+      assert.ok(typeof a.baseDamage === 'number', `${id} missing baseDamage`);
+      assert.ok(typeof a.headDamage === 'number', `${id} missing headDamage`);
+    }
+  });
+});
+
+describe('SKILL_DETAILS', () => {
+  it('has 35 skills', () => {
+    assert.equal(Object.keys(gameData.SKILL_DETAILS).length, 35);
+  });
+
+  it('each skill has name and category', () => {
+    for (const [id, s] of Object.entries(gameData.SKILL_DETAILS)) {
+      assert.ok(s.name, `${id} missing name`);
+      assert.ok(typeof s.category === 'string', `${id} missing category`);
+    }
+  });
+});
+
+describe('REPAIR_RECIPES', () => {
+  it('has 57 entries', () => {
+    assert.equal(Object.keys(gameData.REPAIR_RECIPES).length, 57);
+  });
+
+  it('each value is an array', () => {
+    for (const [id, ingredients] of Object.entries(gameData.REPAIR_RECIPES)) {
+      assert.ok(Array.isArray(ingredients), `${id} should be an array`);
+    }
+  });
+});
+
+describe('CROP_DATA', () => {
+  it('has 6 crops', () => {
+    assert.equal(Object.keys(gameData.CROP_DATA).length, 6);
+  });
+
+  it('each crop has growthTime', () => {
+    for (const [id, c] of Object.entries(gameData.CROP_DATA)) {
+      assert.ok(typeof c.growthTime === 'number', `${id} missing growthTime`);
+    }
+  });
+});
+
+describe('AFFLICTION_DETAILS', () => {
+  it('has 20 afflictions', () => {
+    assert.equal(Object.keys(gameData.AFFLICTION_DETAILS).length, 20);
+  });
+
+  it('each has name and value', () => {
+    for (const [id, a] of Object.entries(gameData.AFFLICTION_DETAILS)) {
+      assert.ok(a.name, `${id} missing name`);
+      assert.ok(typeof a.value === 'number', `${id} missing value`);
+    }
+  });
+});
+
+describe('Enum lookup maps', () => {
+  it('CRAFTING_STATION_NAMES is populated', () => {
+    assert.ok(Object.keys(gameData.CRAFTING_STATION_NAMES).length > 0);
+  });
+
+  it('ITEM_TYPE_NAMES is populated', () => {
+    assert.ok(Object.keys(gameData.ITEM_TYPE_NAMES).length > 0);
+  });
+
+  it('BUILD_CATEGORY_NAMES is populated', () => {
+    assert.ok(Object.keys(gameData.BUILD_CATEGORY_NAMES).length > 0);
+  });
+});

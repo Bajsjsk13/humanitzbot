@@ -8,7 +8,7 @@
  * - Admin actions: kick/ban via RCON
  * - Calibration mode for coordinate mapping
  *
- * Integrates with: save-parser, player-stats, playtime-tracker, rcon, player-map
+ * Integrates with: save-parser, player-stats, playtime-tracker, rcon
  */
 
 const express = require('express');
@@ -17,7 +17,7 @@ const fs = require('fs');
 const config = require('../config');
 const { parseSave, PERK_MAP } = require('../parsers/save-parser');
 const { AFFLICTION_MAP } = require('../game-data');
-const { cleanItemName, cleanItemArray, isHexGuid } = require('../ue4-names');
+const { cleanActorName, cleanItemName, cleanItemArray, isHexGuid } = require('../ue4-names');
 const playerStats = require('../player-stats');
 const playtime = require('../playtime-tracker');
 const rcon = require('../rcon');
@@ -327,7 +327,7 @@ class WebMapServer {
     app.use(express.json());
 
     // ── API: List available servers (multi-server support) ──
-    app.get('/api/servers', (req, res) => {
+    app.get('/api/servers', requireTier('survivor'), (req, res) => {
       const servers = [{ id: 'primary', name: config.serverName || 'Primary Server' }];
       const additional = this._loadServerList();
       for (const s of additional) {
@@ -447,6 +447,19 @@ class WebMapServer {
         } catch { /* RCON unavailable — all players show offline */ }
       }
 
+      // Build clan membership lookup from DB
+      let clanLookup = {}; // steamId → { clanName, rank }
+      if (isPrimary && this._db) {
+        try {
+          const clans = this._db.getAllClans?.() || [];
+          for (const clan of clans) {
+            for (const m of (clan.members || [])) {
+              clanLookup[m.steam_id] = { clanName: clan.name, rank: m.rank };
+            }
+          }
+        } catch { /* clan data unavailable */ }
+      }
+
       const result = [];
 
       for (const [steamId, data] of players) {
@@ -512,6 +525,10 @@ class WebMapServer {
           fishCaught: data.fishCaught || 0,
           fishCaughtPike: data.fishCaughtPike || 0,
           exp: data.exp || 0,
+          level: data.level || 0,
+          expCurrent: data.expCurrent || 0,
+          expRequired: data.expRequired || 0,
+          skillsPoint: data.skillsPoint || 0,
 
           // Vitals
           health: data.health,
@@ -563,6 +580,10 @@ class WebMapServer {
           raidsOut: logStats?.raidsOut || 0,
           raidsIn: logStats?.raidsIn || 0,
           connects: logStats?.connects || 0,
+
+          // Clan
+          clanName: clanLookup[steamId]?.clanName || null,
+          clanRank: clanLookup[steamId]?.rank || null,
 
           // Playtime
           totalPlaytime: ptData ? Math.floor(ptData.totalMs / 60000) : 0,
@@ -756,6 +777,8 @@ class WebMapServer {
           totalPlayers: 0,
           gameDay: null,
           season: null,
+          gameTime: null,
+          timezone: config.botTimezone || 'UTC',
         },
         servers: [],
         schedule: null,
@@ -769,6 +792,9 @@ class WebMapServer {
           result.primary.status = 'online';
           result.primary.maxPlayers = info.maxPlayers || null;
           result.primary.gameDay = info.day || null;
+          if (info.season) result.primary.season = info.season;
+          if (info.name) result.primary.rconName = info.name;
+          if (info.time) result.primary.gameTime = info.time;
         }
         const list = await getPlayerList();
         const playerArr = list?.players || (Array.isArray(list) ? list : []);
@@ -777,16 +803,29 @@ class WebMapServer {
         result.primary.status = 'offline';
       }
 
-      // Total players from save data
+      // Total players from save data + extract game day from save-cache
       const players = this._parseSaveData();
       result.primary.totalPlayers = players.size;
 
-      // World state from DB (game day / season fallback)
+      // Game day from save-cache (RCON doesn't return Day)
+      if (!result.primary.gameDay) {
+        try {
+          const cachePath = path.join(DATA_DIR, 'save-cache.json');
+          if (fs.existsSync(cachePath)) {
+            const cache = JSON.parse(fs.readFileSync(cachePath, 'utf8'));
+            if (cache.worldState?.daysPassed != null) {
+              result.primary.gameDay = cache.worldState.daysPassed;
+            }
+          }
+        } catch { /* save-cache unavailable */ }
+      }
+
+      // World state from DB (fallback for game day / season)
       if (this._db) {
         try {
-          const ws = this._db.getWorldState?.() || {};
-          if (ws.day) result.primary.gameDay = ws.day;
-          if (ws.season) result.primary.season = ws.season;
+          const ws = this._db.getAllWorldState?.() || {};
+          if (!result.primary.gameDay && ws.day) result.primary.gameDay = ws.day;
+          if (!result.primary.season && ws.season) result.primary.season = ws.season;
         } catch { /* db unavailable */ }
       }
 
@@ -831,6 +870,9 @@ class WebMapServer {
         result.servers.push(serverInfo);
       }
 
+      // Discord invite link
+      result.primary.discordInvite = config.discordInviteLink || '';
+
       res.json(result);
     });
 
@@ -840,7 +882,7 @@ class WebMapServer {
 
     // ── Panel: Server status (RCON info + resources) ──
     app.get('/api/panel/status', requireTier('survivor'), async (req, res) => {
-      const result = { serverState: 'unknown', uptime: null, playerCount: null, onlineCount: 0, fps: null, gameDay: null, season: null, resources: null };
+      const result = { serverState: 'unknown', uptime: null, maxPlayers: null, onlineCount: 0, fps: null, gameDay: null, season: null, gameTime: null, timezone: config.botTimezone || 'UTC', resources: null };
 
       // RCON server info
       try {
@@ -850,7 +892,9 @@ class WebMapServer {
           result.serverState = 'running';
           result.fps = info.fps || null;
           result.gameDay = info.day || null;
-          result.playerCount = info.maxPlayers || null;
+          result.maxPlayers = info.maxPlayers || null;
+          if (info.season) result.season = info.season;
+          if (info.time) result.gameTime = info.time;
         }
         const list = await getPlayerList();
         const playerArr = list?.players || (Array.isArray(list) ? list : []);
@@ -880,12 +924,25 @@ class WebMapServer {
         }
       } catch { /* resources unavailable */ }
 
-      // World state from DB
+      // Game day from save-cache (RCON doesn't return Day)
+      if (!result.gameDay) {
+        try {
+          const cachePath = path.join(DATA_DIR, 'save-cache.json');
+          if (fs.existsSync(cachePath)) {
+            const cache = JSON.parse(fs.readFileSync(cachePath, 'utf8'));
+            if (cache.worldState?.daysPassed != null) {
+              result.gameDay = cache.worldState.daysPassed;
+            }
+          }
+        } catch { /* save-cache unavailable */ }
+      }
+
+      // Season from RCON (already set above), then DB fallback
       if (this._db) {
         try {
-          const worldState = this._db.getWorldState?.() || {};
-          if (worldState.day) result.gameDay = worldState.day;
-          if (worldState.season) result.season = worldState.season;
+          const ws = this._db.getAllWorldState?.() || {};
+          if (!result.gameDay && ws.day) result.gameDay = ws.day;
+          if (!result.season && ws.season) result.season = ws.season;
         } catch { /* db unavailable */ }
       }
 
@@ -908,12 +965,17 @@ class WebMapServer {
         result.onlinePlayers = playerArr.length;
       } catch { /* RCON unavailable */ }
 
-      // DB counts for today
+      // DB counts for today (timezone-aware using BOT_TIMEZONE)
       if (this._db) {
         try {
-          const today = new Date();
-          today.setHours(0, 0, 0, 0);
-          const todayIso = today.toISOString();
+          const tz = config.botTimezone || 'UTC';
+          const nowStr = new Date().toLocaleDateString('en-CA', { timeZone: tz }); // YYYY-MM-DD
+          const todayMidnight = new Date(`${nowStr}T00:00:00`);
+          // Convert to UTC by accounting for timezone offset
+          const tzDate = new Date(todayMidnight.toLocaleString('en-US', { timeZone: 'UTC' }));
+          const localDate = new Date(todayMidnight.toLocaleString('en-US', { timeZone: tz }));
+          const offsetMs = tzDate - localDate;
+          const todayIso = new Date(todayMidnight.getTime() + offsetMs).toISOString();
           const activities = this._db.getActivitySince?.(todayIso) || [];
           result.eventsToday = activities.length;
           const chats = this._db.getChatSince?.(todayIso) || [];
@@ -941,7 +1003,292 @@ class WebMapServer {
         } else {
           events = this._db.getRecentActivity(limit);
         }
-        res.json({ events: events || [] });
+
+        // Resolve steam IDs to player names + clean UE4 blueprint names
+        const resolved = (events || []).map(e => {
+          const out = { ...e };
+          // Resolve actor: prefer actor_name, fall back to idMap lookup on steam_id or actor
+          if (!out.actor_name && out.steam_id && this._idMap[out.steam_id]) {
+            out.actor_name = this._idMap[out.steam_id];
+          } else if (!out.actor_name && out.actor && this._idMap[out.actor]) {
+            out.actor_name = this._idMap[out.actor];
+          }
+          // Resolve target: prefer target_name, fall back to idMap
+          if (!out.target_name && out.target_steam_id && this._idMap[out.target_steam_id]) {
+            out.target_name = this._idMap[out.target_steam_id];
+          }
+          // Clean UE4 blueprint names from item/actor fields
+          if (out.item) out.item = cleanActorName(out.item);
+          if (out.actor && !out.actor_name) out.actor_name = cleanActorName(out.actor);
+          return out;
+        });
+
+        res.json({ events: resolved });
+      } catch (err) {
+        res.status(500).json({ error: err.message });
+      }
+    });
+
+    // ── Panel: Clans from DB ──
+    app.get('/api/panel/clans', requireTier('survivor'), (req, res) => {
+      if (!this._db) return res.json({ clans: [] });
+
+      try {
+        const clans = this._db.getAllClans?.() || [];
+        res.json({ clans });
+      } catch (err) {
+        res.status(500).json({ error: err.message });
+      }
+    });
+
+    // ── Panel: Map world data (structures, vehicles, containers, companions, dead bodies) ──
+    app.get('/api/panel/mapdata', requireTier('survivor'), (req, res) => {
+      if (!this._db) return res.json({ structures: [], vehicles: [], containers: [], companions: [], deadBodies: [] });
+
+      const layers = (req.query.layers || 'all').split(',');
+      const showAll = layers.includes('all');
+      const result = {};
+
+      try {
+        if (showAll || layers.includes('structures')) {
+          const rows = this._db.db.prepare('SELECT id, display_name, actor_class, owner_steam_id, pos_x, pos_y, pos_z, current_health, max_health, upgrade_level, inventory FROM structures WHERE pos_x IS NOT NULL').all();
+          result.structures = rows.map(r => {
+            const [lat, lng] = this._worldToLeaflet(r.pos_x, r.pos_y);
+            let itemCount = 0;
+            try { const items = JSON.parse(r.inventory || '[]'); itemCount = items.filter(i => i && i !== 'Empty' && i !== 'None').length; } catch {}
+            return { id: r.id, name: r.display_name || cleanActorName(r.actor_class), owner: r.owner_steam_id, lat, lng, health: r.current_health, maxHealth: r.max_health, upgrade: r.upgrade_level, itemCount };
+          });
+        }
+
+        if (showAll || layers.includes('vehicles')) {
+          const rows = this._db.db.prepare('SELECT id, display_name, class, pos_x, pos_y, pos_z, health, max_health, fuel FROM vehicles WHERE pos_x IS NOT NULL').all();
+          result.vehicles = rows.map(r => {
+            const [lat, lng] = this._worldToLeaflet(r.pos_x, r.pos_y);
+            return { id: r.id, name: r.display_name || cleanActorName(r.class), lat, lng, health: r.health, maxHealth: r.max_health, fuel: Math.round(r.fuel * 10) / 10 };
+          });
+        }
+
+        if (showAll || layers.includes('containers')) {
+          const rows = this._db.db.prepare('SELECT actor_name, pos_x, pos_y, pos_z, items, locked FROM containers WHERE pos_x IS NOT NULL AND pos_x != 0').all();
+          result.containers = rows.map(r => {
+            const [lat, lng] = this._worldToLeaflet(r.pos_x, r.pos_y);
+            let itemCount = 0;
+            try { const items = JSON.parse(r.items || '[]'); itemCount = items.filter(i => i && i.item && i.item !== 'None' && i.item !== 'Empty').length; } catch {}
+            return { name: cleanActorName(r.actor_name), lat, lng, locked: !!r.locked, itemCount };
+          });
+        }
+
+        if (showAll || layers.includes('companions')) {
+          const rows = this._db.db.prepare('SELECT id, type, actor_name, owner_steam_id, pos_x, pos_y, pos_z, health, extra FROM companions WHERE pos_x IS NOT NULL').all();
+          result.companions = rows.map(r => {
+            const [lat, lng] = this._worldToLeaflet(r.pos_x, r.pos_y);
+            return { id: r.id, type: r.type, owner: r.owner_steam_id, lat, lng, health: r.health };
+          });
+        }
+
+        if (showAll || layers.includes('deadBodies')) {
+          const rows = this._db.db.prepare('SELECT actor_name, pos_x, pos_y, pos_z FROM dead_bodies WHERE pos_x IS NOT NULL').all();
+          result.deadBodies = rows.map(r => {
+            const [lat, lng] = this._worldToLeaflet(r.pos_x, r.pos_y);
+            return { name: r.actor_name, lat, lng };
+          });
+        }
+
+        // Build steam_id → name lookup for owner resolution
+        const nameMap = {};
+        const nameRows = this._db.db.prepare('SELECT steam_id, name FROM players').all();
+        for (const nr of nameRows) nameMap[nr.steam_id] = nr.name;
+        result.nameMap = nameMap;
+
+        res.json(result);
+      } catch (err) {
+        res.status(500).json({ error: err.message });
+      }
+    });
+
+    // ── Panel: Item Tracking API ──
+
+    // GET /api/panel/items — All tracked items (instances + groups), with filters
+    app.get('/api/panel/items', requireTier('admin'), (req, res) => {
+      if (!this._db) return res.json({ instances: [], groups: [], total: 0 });
+      try {
+        const search = req.query.search || '';
+        const locationType = req.query.locationType || '';
+        const locationId = req.query.locationId || '';
+        const limit = Math.min(parseInt(req.query.limit, 10) || 100, 500);
+
+        let instances, groups;
+
+        if (search) {
+          instances = this._db.searchItemInstances(search, limit);
+          groups = this._db.searchItemGroups(search, limit);
+        } else if (locationType && locationId) {
+          instances = this._db.getItemInstancesByLocation(locationType, locationId);
+          groups = this._db.getItemGroupsByLocation(locationType, locationId);
+        } else {
+          instances = this._db.getActiveItemInstances();
+          groups = this._db.getActiveItemGroups();
+        }
+
+        // Parse attachments JSON
+        for (const inst of instances) {
+          try { inst.attachments = JSON.parse(inst.attachments); } catch { inst.attachments = []; }
+        }
+        for (const grp of groups) {
+          try { grp.attachments = JSON.parse(grp.attachments); } catch { grp.attachments = []; }
+        }
+
+        // Build location summary for sidebar
+        const locationSummary = {};
+        for (const inst of instances) {
+          const key = `${inst.location_type}|${inst.location_id}`;
+          if (!locationSummary[key]) locationSummary[key] = { type: inst.location_type, id: inst.location_id, instanceCount: 0, groupCount: 0, totalItems: 0 };
+          locationSummary[key].instanceCount++;
+          locationSummary[key].totalItems += inst.amount || 1;
+        }
+        for (const grp of groups) {
+          const key = `${grp.location_type}|${grp.location_id}`;
+          if (!locationSummary[key]) locationSummary[key] = { type: grp.location_type, id: grp.location_id, instanceCount: 0, groupCount: 0, totalItems: 0 };
+          locationSummary[key].groupCount++;
+          locationSummary[key].totalItems += grp.quantity * (grp.stack_size || 1);
+        }
+
+        res.json({
+          instances,
+          groups,
+          locations: Object.values(locationSummary),
+          counts: {
+            instances: this._db.getItemInstanceCount(),
+            groups: this._db.getItemGroupCount(),
+          },
+        });
+      } catch (err) {
+        res.status(500).json({ error: err.message });
+      }
+    });
+
+    // GET /api/panel/items/:id/movements — Movement history for an instance
+    app.get('/api/panel/items/:id/movements', requireTier('admin'), (req, res) => {
+      if (!this._db) return res.json({ movements: [] });
+      try {
+        const id = parseInt(req.params.id, 10);
+        const instance = this._db.getItemInstance(id);
+        if (!instance) return res.status(404).json({ error: 'Instance not found' });
+
+        const movements = this._db.getItemMovements(id);
+        res.json({ instance, movements });
+      } catch (err) {
+        res.status(500).json({ error: err.message });
+      }
+    });
+
+    // GET /api/panel/groups/:id — Group detail with movement history
+    app.get('/api/panel/groups/:id', requireTier('admin'), (req, res) => {
+      if (!this._db) return res.json({ group: null, movements: [] });
+      try {
+        const id = parseInt(req.params.id, 10);
+        const group = this._db.getItemGroup(id);
+        if (!group) return res.status(404).json({ error: 'Group not found' });
+        try { group.attachments = JSON.parse(group.attachments); } catch { group.attachments = []; }
+
+        const movements = this._db.getItemMovementsByGroup(id);
+        res.json({ group, movements });
+      } catch (err) {
+        res.status(500).json({ error: err.message });
+      }
+    });
+
+    // GET /api/panel/movements — Recent item movements across all items
+    app.get('/api/panel/movements', requireTier('admin'), (req, res) => {
+      if (!this._db) return res.json({ movements: [] });
+      try {
+        const limit = Math.min(parseInt(req.query.limit, 10) || 50, 500);
+        const steamId = req.query.steamId || '';
+        const locationType = req.query.locationType || '';
+        const locationId = req.query.locationId || '';
+
+        let movements;
+        if (steamId) {
+          movements = this._db.getItemMovementsByPlayer(steamId, limit);
+        } else if (locationType && locationId) {
+          movements = this._db.getItemMovementsByLocation(locationType, locationId, limit);
+        } else {
+          movements = this._db.getRecentItemMovements(limit);
+        }
+
+        res.json({ movements });
+      } catch (err) {
+        res.status(500).json({ error: err.message });
+      }
+    });
+
+    // ── Panel: Comprehensive DB query (admin only) ──
+    app.get('/api/panel/db/:table', requireTier('admin'), (req, res) => {
+      if (!this._db) return res.json({ rows: [], columns: [] });
+
+      const table = req.params.table;
+      const limit = Math.min(parseInt(req.query.limit, 10) || 50, 1000);
+      const search = req.query.search || '';
+
+      // Whitelist of queryable tables
+      const ALLOWED = new Set([
+        'activity_log', 'chat_log', 'players', 'player_aliases',
+        'clans', 'clan_members', 'world_state', 'structures',
+        'vehicles', 'companions', 'world_horses', 'dead_bodies',
+        'containers', 'loot_actors', 'quests', 'server_settings',
+        'snapshots', 'game_items', 'game_professions', 'game_afflictions',
+        'game_skills', 'game_challenges', 'game_recipes',
+        'item_instances', 'item_movements', 'item_groups', 'world_drops',
+      ]);
+
+      if (!ALLOWED.has(table)) {
+        return res.status(400).json({ error: `Table '${table}' not queryable` });
+      }
+
+      try {
+        const db = this._db.db;
+
+        // Get column names
+        const pragma = db.prepare(`PRAGMA table_info("${table}")`).all();
+        const columns = pragma.map(c => c.name);
+
+        // Build query with optional search
+        let query = `SELECT * FROM "${table}"`;
+        const params = [];
+
+        if (search) {
+          // Search across text columns
+          const textCols = pragma.filter(c =>
+            c.type.toUpperCase().includes('TEXT') || c.type === '' || c.type.toUpperCase().includes('VARCHAR')
+          );
+          if (textCols.length > 0) {
+            const clauses = textCols.map(c => `"${c.name}" LIKE ?`);
+            query += ` WHERE ${clauses.join(' OR ')}`;
+            for (let i = 0; i < textCols.length; i++) params.push(`%${search}%`);
+          }
+        }
+
+        // Order by most recent first if created_at or updated_at exists
+        if (columns.includes('created_at')) query += ' ORDER BY created_at DESC';
+        else if (columns.includes('updated_at')) query += ' ORDER BY updated_at DESC';
+        else if (columns.includes('id')) query += ' ORDER BY id DESC';
+
+        query += ` LIMIT ?`;
+        params.push(limit);
+
+        const rows = db.prepare(query).all(...params);
+
+        // Resolve steam IDs in player-related tables
+        if (columns.includes('steam_id') || columns.includes('owner_steam_id')) {
+          for (const row of rows) {
+            const sid = row.steam_id || row.owner_steam_id;
+            if (sid && this._idMap[sid] && !row.name && !row.actor_name && !row.player_name) {
+              row._resolved_name = this._idMap[sid];
+            }
+          }
+        }
+
+        res.json({ table, columns, rows, total: rows.length });
       } catch (err) {
         res.status(500).json({ error: err.message });
       }
@@ -1025,6 +1372,16 @@ class WebMapServer {
       });
     });
 
+    // Sensitive keys that should never be exposed via API
+    const HIDDEN_SETTINGS = new Set(['AdminPass', 'RCONPass', 'Password', 'RConPort', 'RCONEnabled']);
+    function filterSettings(settings) {
+      const filtered = {};
+      for (const [k, v] of Object.entries(settings)) {
+        if (!HIDDEN_SETTINGS.has(k) && !k.startsWith('_')) filtered[k] = v;
+      }
+      return filtered;
+    }
+
     // ── Panel: Game server settings (read) ──
     app.get('/api/panel/settings', requireTier('admin'), async (req, res) => {
       // Try loading from cached file first
@@ -1032,7 +1389,7 @@ class WebMapServer {
       try {
         if (fs.existsSync(settingsFile)) {
           const data = JSON.parse(fs.readFileSync(settingsFile, 'utf8'));
-          return res.json({ settings: data });
+          return res.json({ settings: filterSettings(data) });
         }
       } catch { /* fall through to SFTP */ }
 
@@ -1057,7 +1414,7 @@ class WebMapServer {
           }
           // Cache for next time
           fs.writeFileSync(settingsFile, JSON.stringify(settings, null, 2));
-          res.json({ settings });
+          res.json({ settings: filterSettings(settings) });
         } catch (err) {
           res.status(500).json({ error: `Failed to read settings: ${err.message}` });
         }

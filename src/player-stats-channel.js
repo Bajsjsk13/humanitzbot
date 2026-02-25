@@ -5,7 +5,6 @@ const path = require('path');
 const _defaultConfig = require('./config');
 const _defaultPlaytime = require('./playtime-tracker');
 const _defaultPlayerStats = require('./player-stats');
-const playerMap = require('./player-map');
 const { parseSave, parseClanData, PERK_MAP, PERK_INDEX_MAP } = require('./parsers/save-parser');
 const { buildWelcomeContent } = require('./auto-messages');
 const gameData = require('./game-data');
@@ -148,8 +147,13 @@ class PlayerStatsChannel {
       await this._refreshIdMap(sftp);
 
       const buf = await this._downloadSave(sftp);
-      const { players, worldState } = parseSave(buf);
+      const { players, worldState, structures, vehicles, horses, containers, companions } = parseSave(buf);
       this._saveData = players;
+      this._structures = structures || [];
+      this._vehicles = vehicles || [];
+      this._horses = horses || [];
+      this._containers = containers || [];
+      this._companions = companions || [];
       this._lastSaveUpdate = new Date();
 
       // Track world state changes (season, day, airdrop)
@@ -163,23 +167,6 @@ class PlayerStatsChannel {
       // Detect world state changes (season, day milestones, airdrops)
       if (prevWorldState && this._config.enableWorldEventFeed && this._logWatcher) {
         this._detectWorldEvents(prevWorldState, this._worldState);
-      }
-
-      // Feed coordinates to player map tracker
-      if (this._config.enablePlayerMap) {
-        try {
-          const nameMap = new Map();
-          if (this._playerStats._idMap) {
-            for (const [nameLower, steamId] of this._playerStats._idMap) {
-              // Use the proper-cased name from player records when available
-              const rec = this._playerStats._data?.players?.[steamId];
-              nameMap.set(steamId, rec?.name || nameLower);
-            }
-          }
-          playerMap.updateFromSave(players, new Set(), nameMap);
-        } catch (err) {
-          console.error(`[${this._label}] Player map update error:`, err.message);
-        }
       }
 
       // Parse clan data (separate small file)
@@ -405,6 +392,11 @@ class PlayerStatsChannel {
         playerCount: this._saveData.size,
         worldState: this._worldState || {},
         players,
+        structures: this._structures || [],
+        vehicles: this._vehicles || [],
+        horses: this._horses || [],
+        containers: this._containers || [],
+        companions: this._companions || [],
       };
       fs.writeFileSync(path.join(this._dataDir, 'save-cache.json'), JSON.stringify(cache));
     } catch (err) {
@@ -1426,7 +1418,7 @@ class PlayerStatsChannel {
   _buildOverviewEmbed() {
     const serverTag = this._config.serverName ? ` — ${this._config.serverName}` : '';
     const embed = new EmbedBuilder()
-      .setTitle(`Player Statistics${serverTag}`)
+      .setTitle(`📊 Player Statistics${serverTag}`)
       .setColor(0x9b59b6)
       .setTimestamp()
       .setFooter({ text: 'Select a player below for full stats · Last updated' });
@@ -1459,7 +1451,36 @@ class PlayerStatsChannel {
       ...Object.keys(this._killData.players || {}),
     ]);
 
-    // ── Kill Leaderboard (all-time) ──
+    const medals = ['🥇', '🥈', '🥉'];
+    const fmtMs = (ms) => {
+      const h = Math.floor(ms / 3600000);
+      const m = Math.floor((ms % 3600000) / 60000);
+      return h > 0 ? `${h}h ${m}m` : `${m}m`;
+    };
+
+    // ── Server Totals ──
+    if (allTrackedIds.size > 0 || allLog.length > 0) {
+      let totalKills = 0, totalHS = 0, totalDays = 0;
+      for (const id of allTrackedIds) {
+        const at = this.getAllTimeKills(id);
+        if (at) { totalKills += at.zeeksKilled; totalHS += at.headshots; }
+        const atSurv = this.getAllTimeSurvival(id);
+        if (atSurv) totalDays += atSurv.daysSurvived;
+      }
+      const totalDeaths = allLog.reduce((s, p) => s + p.deaths, 0);
+      const totalBuilds = allLog.reduce((s, p) => s + p.builds, 0);
+      const totalPvp = allLog.reduce((s, p) => s + (p.pvpKills || 0), 0);
+
+      const lines = [
+        `🎯 **${totalKills.toLocaleString()}** kills · **${totalHS.toLocaleString()}** headshots`,
+        `📅 **${totalDays.toLocaleString()}** days survived · **${totalDeaths.toLocaleString()}** deaths`,
+        `🏗️ **${totalBuilds.toLocaleString()}** builds` + (totalPvp > 0 ? ` · ⚔️ **${totalPvp}** PvP kills` : ''),
+      ];
+      embed.addFields({ name: `Server Overview · ${allTrackedIds.size} Players`, value: lines.join('\n') });
+    }
+
+    // ── Leaderboards (inline 3-column grid) ──
+    // Top Killers
     if (allTrackedIds.size > 0) {
       const killers = [...allTrackedIds]
         .map(id => {
@@ -1470,84 +1491,25 @@ class PlayerStatsChannel {
         .sort((a, b) => b.kills - a.kills);
 
       if (killers.length > 0) {
-        const medals = ['🥇', '🥈', '🥉'];
         const lines = killers.slice(0, 5).map((e, i) => {
           const medal = medals[i] || `\`${i + 1}.\``;
-          const at = this.getAllTimeKills(e.id);
-          const detail = [];
-          if (at.headshots > 0) detail.push(`${at.headshots} HS`);
-          if (at.meleeKills > 0) detail.push(`${at.meleeKills} melee`);
-          if (at.gunKills > 0) detail.push(`${at.gunKills} gun`);
-          const extra = detail.length > 0 ? ` *(${detail.join(', ')})*` : '';
-          return `${medal} **${e.name}** — ${e.kills} kills${extra}`;
+          return `${medal} **${e.name}** — ${e.kills}`;
         });
-        embed.addFields({ name: 'Top Killers', value: lines.join('\n') });
+        embed.addFields({ name: '🔪 Top Killers', value: lines.join('\n'), inline: true });
       }
-
-      // ── Server Kill Totals (code block grid) ──
-      let totalKills = 0, totalHS = 0, totalMelee = 0, totalGun = 0;
-      let totalDays = 0;
-      for (const id of allTrackedIds) {
-        const at = this.getAllTimeKills(id);
-        if (at) {
-          totalKills += at.zeeksKilled;
-          totalHS += at.headshots;
-          totalMelee += at.meleeKills;
-          totalGun += at.gunKills;
-        }
-        const atSurv = this.getAllTimeSurvival(id);
-        if (atSurv) totalDays += atSurv.daysSurvived;
-      }
-      const totals = [
-        `Kills: **${totalKills}**  ·  Headshots: **${totalHS}**`,
-        `Melee: **${totalMelee}**  ·  Ranged: **${totalGun}**`,
-        `Days: **${totalDays}**  ·  Players: **${allTrackedIds.size}**`,
-      ];
-      embed.addFields({ name: 'Server Totals (All Time)', value: totals.join('\n') });
     }
 
-    // ── Top Playtime ──
+    // Top Playtime
     const leaderboard = this._playtime.getLeaderboard();
     if (leaderboard.length > 0) {
-      const medals = ['🥇', '🥈', '🥉'];
-      const top5 = leaderboard.slice(0, 5).map((entry, i) => {
+      const lines = leaderboard.slice(0, 5).map((entry, i) => {
         const medal = medals[i] || `\`${i + 1}.\``;
         return `${medal} **${entry.name}** — ${entry.totalFormatted}`;
       });
-      embed.addFields({ name: 'Top Playtime', value: top5.join('\n') });
+      embed.addFields({ name: '⏱️ Top Playtime', value: lines.join('\n'), inline: true });
     }
 
-    // ── Activity Stats (from logs) ──
-    if (allLog.length > 0) {
-      const totalDeaths = allLog.reduce((s, p) => s + p.deaths, 0);
-      const totalBuilds = allLog.reduce((s, p) => s + p.builds, 0);
-      const totalLoots = allLog.reduce((s, p) => s + p.containersLooted, 0);
-      const totalDmg = allLog.reduce((s, p) => s + Object.values(p.damageTaken).reduce((a, b) => a + b, 0), 0);
-      const totalPvpKills = allLog.reduce((s, p) => s + (p.pvpKills || 0), 0);
-      const parts = [`Deaths: **${totalDeaths}**`, `Builds: **${totalBuilds}**`, `Looted: **${totalLoots}**`, `Hits: **${totalDmg}**`];
-      if (totalPvpKills > 0) parts.push(`PvP Kills: **${totalPvpKills}**`);
-      if (this._config.showRaidStats) {
-        const totalRaids = allLog.reduce((s, p) => s + p.raidsOut, 0);
-        parts.push(`Raids: **${totalRaids}**`);
-      }
-      embed.addFields({ name: 'Log Activity', value: parts.join('  ·  ') });
-    }
-
-    // ── Last 10 PvP Kills ──
-    if (this._config.showPvpKills && this._logWatcher) {
-      const recentKills = this._logWatcher.getPvpKills(10);
-      if (recentKills.length > 0) {
-        const killLines = recentKills.slice().reverse().map(k => {
-          const ts = new Date(k.timestamp);
-          const timeStr = ts.toLocaleDateString('en-GB', { timeZone: this._config.botTimezone, day: 'numeric', month: 'short' }) +
-            ' ' + ts.toLocaleTimeString('en-GB', { timeZone: this._config.botTimezone, hour: '2-digit', minute: '2-digit' });
-          return `**${k.killer}** killed **${k.victim}** — ${timeStr}`;
-        });
-        embed.addFields({ name: 'Recent PvP Kills', value: killLines.join('\n') });
-      }
-    }
-
-    // ── Survival Leaderboard (all-time from tracker) ──
+    // Longest Survivors
     if (allTrackedIds.size > 0) {
       const survivors = [...allTrackedIds]
         .map(id => {
@@ -1558,16 +1520,18 @@ class PlayerStatsChannel {
         .sort((a, b) => b.days - a.days);
 
       if (survivors.length > 0) {
-        const medals = ['🥇', '🥈', '🥉'];
         const lines = survivors.slice(0, 5).map((e, i) => {
           const medal = medals[i] || `\`${i + 1}.\``;
-          return `${medal} **${e.name}** — ${e.days} days`;
+          return `${medal} **${e.name}** — ${e.days}d`;
         });
-        embed.addFields({ name: 'Longest Survivors', value: lines.join('\n') });
+        embed.addFields({ name: '📅 Longest Survivors', value: lines.join('\n'), inline: true });
       }
     }
 
-    // ── Most Bitten Leaderboard (from save data) ──
+    // ── Fun Stats (inline row) ──
+    const funFields = [];
+
+    // Most Bitten
     if (this._config.showMostBitten && this._saveData.size > 0) {
       const bitten = [...this._saveData.entries()]
         .map(([id, save]) => ({ id, name: roster.get(id)?.name || id, count: save.timesBitten || 0 }))
@@ -1575,37 +1539,25 @@ class PlayerStatsChannel {
         .sort((a, b) => b.count - a.count);
 
       if (bitten.length > 0) {
-        const medals = ['🥇', '🥈', '🥉'];
-        const lines = bitten.slice(0, 5).map((e, i) => {
-          const medal = medals[i] || `\`${i + 1}.\``;
-          return `${medal} **${e.name}** — ${e.count} bites`;
-        });
-        embed.addFields({ name: 'Most Bitten', value: lines.join('\n') });
+        const lines = bitten.slice(0, 3).map((e, i) => `${medals[i]} **${e.name}** — ${e.count}`);
+        funFields.push({ name: '🦷 Most Bitten', value: lines.join('\n'), inline: true });
       }
     }
 
-    // ── Most Fish Caught Leaderboard (from save data) ──
+    // Most Fish
     if (this._config.showMostFish && this._saveData.size > 0) {
       const fishers = [...this._saveData.entries()]
-        .map(([id, save]) => {
-          const pike = save.fishCaughtPike || 0;
-          return { id, name: roster.get(id)?.name || id, count: save.fishCaught || 0, pike };
-        })
+        .map(([id, save]) => ({ id, name: roster.get(id)?.name || id, count: save.fishCaught || 0 }))
         .filter(e => e.count > 0)
         .sort((a, b) => b.count - a.count);
 
       if (fishers.length > 0) {
-        const medals = ['🥇', '🥈', '🥉'];
-        const lines = fishers.slice(0, 5).map((e, i) => {
-          const medal = medals[i] || `\`${i + 1}.\``;
-          const pikeStr = e.pike > 0 ? ` (${e.pike} pike)` : '';
-          return `${medal} **${e.name}** — ${e.count} fish${pikeStr}`;
-        });
-        embed.addFields({ name: 'Most Fish Caught', value: lines.join('\n') });
+        const lines = fishers.slice(0, 3).map((e, i) => `${medals[i]} **${e.name}** — ${e.count}`);
+        funFields.push({ name: '🐟 Most Fish', value: lines.join('\n'), inline: true });
       }
     }
 
-    // ── Top PvP Killers (all-time, from logs) ──
+    // Top PvP Killers
     if (this._config.showPvpKills && allLog.length > 0) {
       const pvpKillers = allLog
         .filter(p => (p.pvpKills || 0) > 0)
@@ -1613,16 +1565,27 @@ class PlayerStatsChannel {
         .sort((a, b) => b.kills - a.kills);
 
       if (pvpKillers.length > 0) {
-        const medals = ['🥇', '🥈', '🥉'];
-        const lines = pvpKillers.slice(0, 5).map((e, i) => {
-          const medal = medals[i] || `\`${i + 1}.\``;
-          return `${medal} **${e.name}** — ${e.kills} kills`;
-        });
-        embed.addFields({ name: 'Top PvP Killers', value: lines.join('\n') });
+        const lines = pvpKillers.slice(0, 3).map((e, i) => `${medals[i]} **${e.name}** — ${e.kills}`);
+        funFields.push({ name: '⚔️ Top PvP', value: lines.join('\n'), inline: true });
       }
     }
 
-    // ── Weekly Leaderboards ──
+    if (funFields.length > 0) embed.addFields(funFields);
+
+    // ── Recent PvP Kills ──
+    if (this._config.showPvpKills && this._logWatcher) {
+      const recentKills = this._logWatcher.getPvpKills(5);
+      if (recentKills.length > 0) {
+        const killLines = recentKills.slice().reverse().map(k => {
+          const ts = new Date(k.timestamp);
+          const timeStr = ts.toLocaleDateString('en-GB', { timeZone: this._config.botTimezone, day: 'numeric', month: 'short' });
+          return `**${k.killer}** → **${k.victim}** · ${timeStr}`;
+        });
+        embed.addFields({ name: '💀 Recent PvP', value: killLines.join('\n') });
+      }
+    }
+
+    // ── Weekly Leaderboards (compact inline row) ──
     const w = this._weeklyStats;
     if (w) {
       const weekLabel = w.weekStart
@@ -1631,70 +1594,41 @@ class PlayerStatsChannel {
       const weeklyParts = [];
 
       if (w.topKillers?.length > 0) {
-        const medals = ['🥇', '🥈', '🥉'];
-        const lines = w.topKillers.slice(0, 3).map((e, i) => {
-          const medal = medals[i] || `\`${i + 1}.\``;
-          return `${medal} **${e.name}** — ${e.kills}`;
-        });
-        weeklyParts.push({ name: `Zombie Kills · ${weekLabel}`, value: lines.join('\n'), inline: true });
+        const lines = w.topKillers.slice(0, 3).map((e, i) => `${medals[i]} **${e.name}** — ${e.kills}`);
+        weeklyParts.push({ name: `🔪 Kills · ${weekLabel}`, value: lines.join('\n'), inline: true });
       }
 
       if (w.topPvpKillers?.length > 0) {
-        const medals = ['🥇', '🥈', '🥉'];
-        const lines = w.topPvpKillers.slice(0, 3).map((e, i) => {
-          const medal = medals[i] || `\`${i + 1}.\``;
-          return `${medal} **${e.name}** — ${e.kills}`;
-        });
-        weeklyParts.push({ name: `PvP Kills · ${weekLabel}`, value: lines.join('\n'), inline: true });
+        const lines = w.topPvpKillers.slice(0, 3).map((e, i) => `${medals[i]} **${e.name}** — ${e.kills}`);
+        weeklyParts.push({ name: `⚔️ PvP · ${weekLabel}`, value: lines.join('\n'), inline: true });
       }
 
       if (w.topPlaytime?.length > 0) {
-        const medals = ['🥇', '🥈', '🥉'];
-        const fmtMs = (ms) => {
-          const h = Math.floor(ms / 3600000);
-          const m = Math.floor((ms % 3600000) / 60000);
-          return h > 0 ? `${h}h ${m}m` : `${m}m`;
-        };
-        const lines = w.topPlaytime.slice(0, 3).map((e, i) => {
-          const medal = medals[i] || `\`${i + 1}.\``;
-          return `${medal} **${e.name}** — ${fmtMs(e.ms)}`;
-        });
-        weeklyParts.push({ name: `Playtime · ${weekLabel}`, value: lines.join('\n'), inline: true });
+        const lines = w.topPlaytime.slice(0, 3).map((e, i) => `${medals[i]} **${e.name}** — ${fmtMs(e.ms)}`);
+        weeklyParts.push({ name: `⏱️ Playtime · ${weekLabel}`, value: lines.join('\n'), inline: true });
       }
 
       if (w.topFishers?.length > 0) {
-        const medals = ['🥇', '🥈', '🥉'];
-        const lines = w.topFishers.slice(0, 3).map((e, i) => {
-          const medal = medals[i] || `\`${i + 1}.\``;
-          return `${medal} **${e.name}** — ${e.count}`;
-        });
-        weeklyParts.push({ name: `Fish Caught · ${weekLabel}`, value: lines.join('\n'), inline: true });
+        const lines = w.topFishers.slice(0, 3).map((e, i) => `${medals[i]} **${e.name}** — ${e.count}`);
+        weeklyParts.push({ name: `🐟 Fish · ${weekLabel}`, value: lines.join('\n'), inline: true });
       }
 
       if (w.topBitten?.length > 0) {
-        const medals = ['🥇', '🥈', '🥉'];
-        const lines = w.topBitten.slice(0, 3).map((e, i) => {
-          const medal = medals[i] || `\`${i + 1}.\``;
-          return `${medal} **${e.name}** — ${e.count}`;
-        });
-        weeklyParts.push({ name: `Most Bitten · ${weekLabel}`, value: lines.join('\n'), inline: true });
+        const lines = w.topBitten.slice(0, 3).map((e, i) => `${medals[i]} **${e.name}** — ${e.count}`);
+        weeklyParts.push({ name: `🦷 Bitten · ${weekLabel}`, value: lines.join('\n'), inline: true });
       }
 
-      if (weeklyParts.length > 0) {
-        // Add a separator then the weekly inline fields
-        embed.addFields({ name: '\u200b', value: '**── This Week ──**' });
-        embed.addFields(weeklyParts);
-      }
+      if (weeklyParts.length > 0) embed.addFields(weeklyParts);
     }
 
-    // ── Server Info ──
+    // ── Server Info (compact footer row) ──
     const peaks = this._playtime.getPeaks();
     const trackingSince = new Date(this._playtime.getTrackingSince()).toLocaleDateString('en-GB', { timeZone: this._config.botTimezone });
 
     embed.addFields(
-      { name: "Today's Peak", value: `${peaks.todayPeak} online · ${peaks.uniqueToday} unique`, inline: true },
-      { name: 'Peak Online', value: `${peaks.allTimePeak}`, inline: true },
-      { name: 'Total Players', value: `${playerCount}`, inline: true },
+      { name: '📈 Today', value: `${peaks.todayPeak} peak · ${peaks.uniqueToday} unique`, inline: true },
+      { name: '🏆 All-Time Peak', value: `${peaks.allTimePeak} online`, inline: true },
+      { name: '👥 Total Tracked', value: `${playerCount} players`, inline: true },
     );
 
     const updateNote = this._lastSaveUpdate
@@ -1931,200 +1865,220 @@ class PlayerStatsChannel {
       .setTitle(`${resolved.name}${serverTag}`)
       .setColor(0x9b59b6)
       .setTimestamp()
-      .setFooter({ text: tip ? `Tip: ${tip}` : 'HumanitZ Player Stats' });
+      .setFooter({ text: tip ? `💡 ${tip}` : 'HumanitZ Player Stats' });
 
-    // ── Character Info ──
-    if (saveData || pt) {
-      const lines = [];
-      if (saveData) {
-        const gender = saveData.male ? 'Male' : 'Female';
-        if (saveData.startingPerk && saveData.startingPerk !== 'Unknown') {
-          const profDetails = gameData.PROFESSION_DETAILS[saveData.startingPerk];
-          lines.push(`**${saveData.startingPerk}** · ${gender}`);
-          if (profDetails) lines.push(`> *${profDetails.perk}*`);
-        } else {
-          lines.push(gender);
-        }
-        // Unlocked professions
-        if (saveData.unlockedProfessions?.length > 1) {
-          const profNames = saveData.unlockedProfessions
-            .filter(p => typeof p === 'string')
-            .map(p => PERK_MAP[p] || _cleanItemName(p))
-            .filter(Boolean);
-          if (profNames.length > 0) lines.push(`Unlocked: ${profNames.join(', ')}`);
-        }
-        // Affliction
-        if (typeof saveData.affliction === 'number' && saveData.affliction > 0 && saveData.affliction < gameData.AFFLICTION_MAP.length) {
-          lines.push(`**Affliction:** ${gameData.AFFLICTION_MAP[saveData.affliction]}`);
-        }
+    // ═══════════════════════════════════════════════════
+    //  HEADER — Character overview as description
+    // ═══════════════════════════════════════════════════
+    const descParts = [];
+    if (saveData) {
+      const gender = saveData.male ? 'Male' : 'Female';
+      if (saveData.startingPerk && saveData.startingPerk !== 'Unknown') {
+        const profDetails = gameData.PROFESSION_DETAILS[saveData.startingPerk];
+        descParts.push(`**${saveData.startingPerk}** · ${gender}`);
+        if (profDetails) descParts.push(`> *${profDetails.perk}*`);
+      } else {
+        descParts.push(gender);
       }
-      if (pt) lines.push(`**Playtime:** ${pt.totalFormatted}  ·  **Sessions:** ${pt.sessions}`);
-      // XP
-      if (saveData?.exp != null && saveData.exp > 0) {
-        lines.push(`**XP:** ${Math.round(saveData.exp).toLocaleString()}`);
+      if (typeof saveData.affliction === 'number' && saveData.affliction > 0 && saveData.affliction < gameData.AFFLICTION_MAP.length) {
+        descParts.push(`⚠️ **${gameData.AFFLICTION_MAP[saveData.affliction]}**`);
       }
-      if (resolved.firstSeen) {
-        const fs = new Date(resolved.firstSeen);
-        lines.push(`**First Seen:** ${fs.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', timeZone: this._config.botTimezone })}`);
-      }
-      if (lines.length > 0) embed.addFields({ name: 'Character', value: lines.join('\n') });
     }
-
-    // ── Name History ──
+    if (pt) descParts.push(`⏱️ ${pt.totalFormatted} · ${pt.sessions} session${pt.sessions !== 1 ? 's' : ''}`);
+    if (saveData?.exp != null && saveData.exp > 0) descParts.push(`✨ ${Math.round(saveData.exp).toLocaleString()} XP`);
+    if (resolved.firstSeen) {
+      const fs = new Date(resolved.firstSeen);
+      descParts.push(`📅 First seen ${fs.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', timeZone: this._config.botTimezone })}`);
+    }
     if (logData?.nameHistory && logData.nameHistory.length > 0) {
-      embed.addFields({ name: 'Previous Names', value: logData.nameHistory.map(h => h.name).join(', ') });
+      descParts.push(`*aka ${logData.nameHistory.map(h => h.name).join(', ')}*`);
+    }
+    if (descParts.length > 0) embed.setDescription(descParts.join('\n'));
+
+    // Unlocked professions — only if more than the starting one
+    if (saveData?.unlockedProfessions?.length > 1) {
+      const profNames = saveData.unlockedProfessions
+        .filter(p => typeof p === 'string')
+        .map(p => PERK_MAP[p] || _cleanItemName(p))
+        .filter(Boolean);
+      if (profNames.length > 0) embed.addFields({ name: '🎓 Unlocked Professions', value: profNames.join(', ') });
     }
 
-    // ── Kill Stats ──
+    // ═══════════════════════════════════════════════════
+    //  COMBAT — Kills + Survival + PvP
+    // ═══════════════════════════════════════════════════
     if (saveData) {
       const at = this.getAllTimeKills(steamId);
       const cl = this.getCurrentLifeKills(steamId);
-      const types = [
-        ['Zombie Kills', 'zeeksKilled'],
-        ['Headshots',    'headshots'],
-        ['Melee',     'meleeKills'],
-        ['Ranged',    'gunKills'],
-        ['Blast',     'blastKills'],
-        ['Unarmed',   'fistKills'],
-        ['Takedowns', 'takedownKills'],
-        ['Vehicle',   'vehicleKills'],
-      ];
-      const rows = [];
       const hasExt = saveData.hasExtendedStats;
+
+      // Build kill stat lines
+      const types = [
+        ['🧟 Zombie', 'zeeksKilled'], ['🎯 Headshot', 'headshots'],
+        ['⚔️ Melee', 'meleeKills'],   ['🔫 Ranged', 'gunKills'],
+        ['💥 Blast', 'blastKills'],    ['👊 Unarmed', 'fistKills'],
+        ['🗡️ Takedown', 'takedownKills'], ['🚗 Vehicle', 'vehicleKills'],
+      ];
       let hasDiff = false;
       for (const [, key] of types) {
         if ((cl?.[key] || 0) !== (at?.[key] || 0)) { hasDiff = true; break; }
       }
+      const killParts = [];
       for (const [label, key] of types) {
         const all = at?.[key] || 0;
         const life = cl?.[key] || 0;
         if (all > 0 || life > 0) {
-          if (hasExt && hasDiff && life > 0) {
-            rows.push(`${label}: **${all}** (Life: **${life}**)`);
+          if (hasExt && hasDiff && life > 0 && life !== all) {
+            killParts.push(`${label}: **${all}** *(life: ${life})*`);
           } else {
-            rows.push(`${label}: **${all}**`);
+            killParts.push(`${label}: **${all}**`);
           }
         }
       }
-      if (rows.length > 0) {
-        embed.addFields({ name: 'Kills', value: rows.join('\n') });
-      } else {
-        embed.addFields({ name: 'Kills', value: '*No kills yet*' });
-      }
-    }
 
-    // ── Survival & PvP (inline pair) ──
-    {
-      const survLines = [];
-      if (saveData?.daysSurvived > 0) survLines.push(`**Days:** ${saveData.daysSurvived}`);
-      if (saveData) {
+      // Survival stats mixed in
+      const survParts = [];
+      if (saveData.daysSurvived > 0) {
         const atSurv = this.getAllTimeSurvival(steamId);
-        if (atSurv?.daysSurvived > saveData.daysSurvived) survLines.push(`**All-Time:** ${atSurv.daysSurvived} days`);
+        if (atSurv?.daysSurvived > saveData.daysSurvived) {
+          survParts.push(`📅 Days: **${saveData.daysSurvived}** *(all-time: ${atSurv.daysSurvived})*`);
+        } else {
+          survParts.push(`📅 Days: **${saveData.daysSurvived}**`);
+        }
       }
-      if (logData) survLines.push(`**Deaths:** ${logData.deaths}`);
-      // Bites & Fish
-      if (saveData?.timesBitten > 0) survLines.push(`**Bitten:** ${saveData.timesBitten} times`);
-      if (saveData?.fishCaught > 0) {
-        let fishStr = `**Fish Caught:** ${saveData.fishCaught}`;
+      if (logData) survParts.push(`💀 Deaths: **${logData.deaths}**`);
+      if (saveData.timesBitten > 0) survParts.push(`🦷 Bitten: **${saveData.timesBitten}**`);
+      if (saveData.fishCaught > 0) {
+        let fishStr = `🐟 Fish: **${saveData.fishCaught}**`;
         if (saveData.fishCaughtPike > 0) fishStr += ` (${saveData.fishCaughtPike} pike)`;
-        survLines.push(fishStr);
+        survParts.push(fishStr);
       }
-      if (survLines.length > 0) embed.addFields({ name: 'Survival', value: survLines.join('\n'), inline: true });
+
+      if (killParts.length > 0 || survParts.length > 0) {
+        const combined = [...killParts, ...survParts];
+        embed.addFields({ name: '⚔️ Combat & Survival', value: combined.join('\n') || '*No data yet*' });
+      }
+    } else if (logData) {
+      // No save data — just show log-based deaths
+      embed.addFields({ name: '⚔️ Combat', value: `💀 Deaths: **${logData.deaths}**` });
     }
 
-    // ── PvP Stats ──
+    // ── PvP Stats (inline beside combat if present) ──
     if (logData && ((logData.pvpKills || 0) > 0 || (logData.pvpDeaths || 0) > 0)) {
       const pvpParts = [];
-      if (logData.pvpKills > 0) pvpParts.push(`**Kills:** ${logData.pvpKills}`);
-      if (logData.pvpDeaths > 0) pvpParts.push(`**Deaths:** ${logData.pvpDeaths}`);
+      if (logData.pvpKills > 0) pvpParts.push(`Kills: **${logData.pvpKills}**`);
+      if (logData.pvpDeaths > 0) pvpParts.push(`Deaths: **${logData.pvpDeaths}**`);
       const kd = logData.pvpDeaths > 0 ? (logData.pvpKills / logData.pvpDeaths).toFixed(2) : logData.pvpKills > 0 ? '∞' : '0';
-      pvpParts.push(`**K/D:** ${kd}`);
-      embed.addFields({ name: 'PvP', value: pvpParts.join('\n'), inline: true });
+      pvpParts.push(`K/D: **${kd}**`);
+      embed.addFields({ name: '🏴‍☠️ PvP', value: pvpParts.join(' · '), inline: true });
     }
 
-    // ── Vitals ──
+    // ═══════════════════════════════════════════════════
+    //  VITALS — Health bars + Status effects (compact)
+    // ═══════════════════════════════════════════════════
     if (this._config.canShow('showVitals', isAdmin) && saveData) {
-      const pct = (v) => `**${Math.round(Math.max(0, Math.min(100, v)))}%**`;
-      const row1 = [];
-      const row2 = [];
-      if (this._config.showHealth)   row1.push(`Health: ${pct(saveData.health)}`);
-      if (this._config.showHunger)   row1.push(`Hunger: ${pct(saveData.hunger)}`);
-      if (this._config.showThirst)   row1.push(`Thirst: ${pct(saveData.thirst)}`);
-      if (this._config.showStamina)  row2.push(`Stamina: ${pct(saveData.stamina)}`);
-      if (this._config.showImmunity) row2.push(`Immunity: ${pct(saveData.infection)}`);
-      if (this._config.showBattery)  row2.push(`Battery: ${pct(saveData.battery)}`);
-      const vitals = [row1.join('  ·  '), row2.join('  ·  ')].filter(Boolean);
-      if (vitals.length > 0) embed.addFields({ name: 'Vitals', value: vitals.join('\n') });
-    }
+      const pct = (v) => `${Math.round(Math.max(0, Math.min(100, v)))}%`;
+      const bar = (v) => {
+        const filled = Math.round(Math.max(0, Math.min(100, v)) / 10);
+        return '█'.repeat(filled) + '░'.repeat(10 - filled);
+      };
+      const vitals = [];
+      if (this._config.showHealth)   vitals.push(`❤️ \`${bar(saveData.health)}\` ${pct(saveData.health)}`);
+      if (this._config.showHunger)   vitals.push(`🍖 \`${bar(saveData.hunger)}\` ${pct(saveData.hunger)}`);
+      if (this._config.showThirst)   vitals.push(`💧 \`${bar(saveData.thirst)}\` ${pct(saveData.thirst)}`);
+      if (this._config.showStamina)  vitals.push(`⚡ \`${bar(saveData.stamina)}\` ${pct(saveData.stamina)}`);
+      if (this._config.showImmunity) vitals.push(`🛡️ \`${bar(saveData.infection)}\` ${pct(saveData.infection)}`);
+      if (this._config.showBattery)  vitals.push(`🔋 \`${bar(saveData.battery)}\` ${pct(saveData.battery)}`);
 
-    // ── Status Effects ──
-    if (this._config.canShow('showStatusEffects', isAdmin) && saveData) {
+      // Status effects inline
       const statuses = [];
-      if (this._config.showPlayerStates && saveData.playerStates?.length > 0) {
-        for (const s of saveData.playerStates) {
-          if (typeof s !== 'string') continue;
-          statuses.push(_cleanItemName(s.replace('States.Player.', '')));
+      if (this._config.canShow('showStatusEffects', isAdmin)) {
+        if (this._config.showPlayerStates && saveData.playerStates?.length > 0) {
+          for (const s of saveData.playerStates) {
+            if (typeof s !== 'string') continue;
+            statuses.push(_cleanItemName(s.replace('States.Player.', '')));
+          }
         }
-      }
-      if (this._config.showBodyConditions && saveData.bodyConditions?.length > 0) {
-        for (const s of saveData.bodyConditions) {
-          if (typeof s !== 'string') continue;
-          statuses.push(_cleanItemName(s.replace('Attributes.Health.', '')));
+        if (this._config.showBodyConditions && saveData.bodyConditions?.length > 0) {
+          for (const s of saveData.bodyConditions) {
+            if (typeof s !== 'string') continue;
+            statuses.push(_cleanItemName(s.replace('Attributes.Health.', '')));
+          }
         }
+        if (this._config.showInfectionBuildup && saveData.infectionBuildup > 0) statuses.push(`Infection: ${saveData.infectionBuildup}%`);
+        if (this._config.showFatigue && saveData.fatigue > 0.5) statuses.push('Fatigued');
       }
-      if (this._config.showInfectionBuildup && saveData.infectionBuildup > 0) statuses.push(`Infection: ${saveData.infectionBuildup}%`);
-      if (this._config.showFatigue && saveData.fatigue > 0.5) statuses.push('Fatigued');
-      if (statuses.length > 0) embed.addFields({ name: 'Status Effects', value: statuses.join(', ') });
+
+      if (statuses.length > 0) vitals.push(`\n**Status:** ${statuses.join(', ')}`);
+      if (vitals.length > 0) embed.addFields({ name: '❤️ Vitals', value: vitals.join('\n') });
     }
 
-    // ── Damage Taken ──
+    // ═══════════════════════════════════════════════════
+    //  DAMAGE — Taken + Killed By (inline pair)
+    // ═══════════════════════════════════════════════════
     if (logData) {
       const dmgEntries = Object.entries(logData.damageTaken);
       const dmgTotal = dmgEntries.reduce((s, [, c]) => s + c, 0);
       if (dmgTotal > 0) {
         const dmgSorted = dmgEntries.sort((a, b) => b[1] - a[1]);
-        const dmgLines = dmgSorted.slice(0, 6).map(([src, count]) => `${src}: **${count}**`);
-        if (dmgEntries.length > 6) dmgLines.push(`_+${dmgEntries.length - 6} more_`);
-        embed.addFields({ name: `Damage Taken (${dmgTotal} hits)`, value: dmgLines.join('\n'), inline: true });
+        const dmgLines = dmgSorted.slice(0, 5).map(([src, count]) => `${src}: **${count}**`);
+        if (dmgEntries.length > 5) dmgLines.push(`*+${dmgEntries.length - 5} more*`);
+        embed.addFields({ name: `🩸 Damage (${dmgTotal} hits)`, value: dmgLines.join('\n'), inline: true });
       }
 
-      // ── Killed By ──
       const killEntries = Object.entries(logData.killedBy || {});
       if (killEntries.length > 0) {
         const killSorted = killEntries.sort((a, b) => b[1] - a[1]);
-        const killLines = killSorted.slice(0, 6).map(([src, count]) => `${src}: **${count}**`);
-        if (killEntries.length > 6) killLines.push(`_+${killEntries.length - 6} more_`);
-        embed.addFields({ name: `Killed By (${logData.deaths} deaths)`, value: killLines.join('\n'), inline: true });
+        const killLines = killSorted.slice(0, 5).map(([src, count]) => `${src}: **${count}**`);
+        if (killEntries.length > 5) killLines.push(`*+${killEntries.length - 5} more*`);
+        embed.addFields({ name: `💀 Killed By (${logData.deaths})`, value: killLines.join('\n'), inline: true });
       }
     }
 
-    // ── Building ──
-    if (logData && logData.builds > 0) {
-      const buildEntries = Object.entries(logData.buildItems);
-      if (buildEntries.length > 0) {
-        const topBuilds = buildEntries.sort((a, b) => b[1] - a[1]).slice(0, 6);
-        const buildLines = topBuilds.map(([item, count]) => `${item}: **${count}**`);
-        if (buildEntries.length > 6) buildLines.push(`_+${buildEntries.length - 6} more_`);
-        embed.addFields({ name: `Building (${logData.builds} placed)`, value: buildLines.join('\n'), inline: true });
+    // ═══════════════════════════════════════════════════
+    //  BASE — Building + Raids + Looting (compact)
+    // ═══════════════════════════════════════════════════
+    if (logData) {
+      const baseParts = [];
+
+      // Building
+      if (logData.builds > 0) {
+        const buildEntries = Object.entries(logData.buildItems);
+        if (buildEntries.length > 0) {
+          const topBuilds = buildEntries.sort((a, b) => b[1] - a[1]).slice(0, 4);
+          const buildStr = topBuilds.map(([item, count]) => `${item} x${count}`).join(', ');
+          const moreStr = buildEntries.length > 4 ? ` +${buildEntries.length - 4} more` : '';
+          baseParts.push(`🏗️ **${logData.builds} placed** — ${buildStr}${moreStr}`);
+        } else {
+          baseParts.push(`🏗️ **${logData.builds}** placed`);
+        }
       }
+
+      // Raids
+      if (this._config.canShow('showRaidStats', isAdmin)) {
+        const raidParts = [];
+        if (this._config.showRaidsOut && logData.raidsOut > 0) {
+          raidParts.push(`Attacked: **${logData.raidsOut}**`);
+          if (logData.destroyedOut > 0) raidParts.push(`Destroyed: **${logData.destroyedOut}**`);
+        }
+        if (this._config.showRaidsIn && logData.raidsIn > 0) {
+          raidParts.push(`Raided: **${logData.raidsIn}**`);
+          if (logData.destroyedIn > 0) raidParts.push(`Lost: **${logData.destroyedIn}**`);
+        }
+        if (raidParts.length > 0) baseParts.push(`⚒️ ${raidParts.join(' · ')}`);
+      }
+
+      // Looting
+      if (logData.containersLooted > 0) {
+        baseParts.push(`📦 **${logData.containersLooted}** containers looted`);
+      }
+
+      if (baseParts.length > 0) embed.addFields({ name: '🏠 Base Activity', value: baseParts.join('\n') });
     }
 
-    // ── Raid Stats ──
-    if (this._config.canShow('showRaidStats', isAdmin) && logData) {
-      const raidParts = [];
-      if (this._config.showRaidsOut && logData.raidsOut > 0) raidParts.push(`Attacked: **${logData.raidsOut}**`);
-      if (this._config.showRaidsOut && logData.destroyedOut > 0) raidParts.push(`Destroyed: **${logData.destroyedOut}**`);
-      if (this._config.showRaidsIn && logData.raidsIn > 0) raidParts.push(`Raided: **${logData.raidsIn}**`);
-      if (this._config.showRaidsIn && logData.destroyedIn > 0) raidParts.push(`Lost: **${logData.destroyedIn}**`);
-      if (raidParts.length > 0) embed.addFields({ name: 'Raids', value: raidParts.join('  ·  '), inline: true });
-    }
-
-    // ── Looting ──
-    if (logData && logData.containersLooted > 0) {
-      embed.addFields({ name: 'Looted', value: `**${logData.containersLooted}** containers`, inline: true });
-    }
-
-    // ── Inventory (inline grid) ──
+    // ═══════════════════════════════════════════════════
+    //  INVENTORY — Equipment, slots, backpack (compact)
+    // ═══════════════════════════════════════════════════
     if (this._config.canShow('showInventory', isAdmin) && saveData) {
       const notEmpty = (i) => i.item && !/^empty$/i.test(i.item) && !/^empty$/i.test(_cleanItemName(i.item));
       const fmt = (i) => {
@@ -2138,43 +2092,33 @@ class PlayerStatsChannel {
       const bpItems = (saveData.backpackItems || []).filter(notEmpty);
       const pockets = saveData.inventory.filter(notEmpty);
 
-      // If player has backpack items, note backpack is equipped in equipment section
-      const equipLines = equip.map(fmt);
-      if (bpItems.length > 0 && !equip.some(i => /backpack/i.test(i.item))) {
-        equipLines.push('Backpack');
+      const invSections = [];
+      if (this._config.showEquipment && equip.length > 0) invSections.push(`**Equipped:** ${equip.map(fmt).join(', ')}`);
+      if (this._config.showQuickSlots && quick.length > 0) invSections.push(`**Quick:** ${quick.map(fmt).join(', ')}`);
+      if (this._config.showPockets && pockets.length > 0) invSections.push(`**Pockets:** ${pockets.map(fmt).join(', ')}`);
+      if (this._config.showBackpack && bpItems.length > 0) invSections.push(`**Backpack:** ${bpItems.map(fmt).join(', ')}`);
+
+      if (invSections.length > 0) {
+        embed.addFields({ name: '🎒 Inventory', value: invSections.join('\n').substring(0, 1024) });
       }
-
-      if (this._config.showEquipment && equipLines.length > 0) embed.addFields({ name: `Equipment (${equipLines.length})`, value: equipLines.join('\n').substring(0, 1024), inline: true });
-      if (this._config.showQuickSlots && quick.length > 0) embed.addFields({ name: `Quick Slots (${quick.length})`, value: quick.map(fmt).join('\n').substring(0, 1024), inline: true });
-      if (this._config.showPockets && pockets.length > 0) embed.addFields({ name: `Pockets (${pockets.length})`, value: pockets.map(fmt).join('\n').substring(0, 1024), inline: true });
-      if (this._config.showBackpack && bpItems.length > 0) embed.addFields({ name: `Backpack (${bpItems.length})`, value: bpItems.map(fmt).join('\n').substring(0, 1024), inline: true });
     }
 
-    // ── Recipes ──
-    if (this._config.canShow('showRecipes', isAdmin) && saveData) {
-      const recipeParts = [];
-      if (this._config.showCraftingRecipes && saveData.craftingRecipes.length > 0) recipeParts.push(`**Crafting:** ${saveData.craftingRecipes.map(_cleanItemName).join(', ')}`);
-      if (this._config.showBuildingRecipes && saveData.buildingRecipes.length > 0) recipeParts.push(`**Building:** ${saveData.buildingRecipes.map(_cleanItemName).join(', ')}`);
-      if (recipeParts.length > 0) embed.addFields({ name: 'Recipes', value: recipeParts.join('\n').substring(0, 1024) });
-    }
+    // ═══════════════════════════════════════════════════
+    //  PROGRESSION — Skills, Challenges, Recipes
+    // ═══════════════════════════════════════════════════
 
-    // ── Lore ──
-    if (this._config.canShow('showLore', isAdmin) && saveData && saveData.lore.length > 0) {
-      embed.addFields({ name: 'Lore', value: `${saveData.lore.length} entries collected`, inline: true });
-    }
-
-    // ── Unlocked Skills ──
-    if (this._config.canShow('showSkills', isAdmin) && saveData && saveData.unlockedSkills && saveData.unlockedSkills.length > 0) {
-      const skillLines = saveData.unlockedSkills.filter(s => typeof s === 'string').map(s => {
+    // Skills
+    if (this._config.canShow('showSkills', isAdmin) && saveData?.unlockedSkills?.length > 0) {
+      const skillNames = saveData.unlockedSkills.filter(s => typeof s === 'string').map(s => {
         const clean = s.replace(/^skills\./i, '').replace(/([a-z])([A-Z])/g, '$1 $2').toUpperCase();
         const effect = gameData.SKILL_EFFECTS[clean];
-        return effect ? `**${clean}** — ${effect}` : `**${clean}**`;
+        return effect ? `**${clean}** — *${effect}*` : `**${clean}**`;
       });
-      if (skillLines.length > 0) embed.addFields({ name: 'Skills', value: skillLines.join('\n').substring(0, 1024) });
+      if (skillNames.length > 0) embed.addFields({ name: `🧠 Skills (${skillNames.length})`, value: skillNames.join('\n').substring(0, 1024) });
     }
 
-    // ── Challenge Progress ──
-    if (saveData && saveData.hasExtendedStats) {
+    // Challenges
+    if (saveData?.hasExtendedStats) {
       const challengeEntries = [
         ['challengeKillZombies',        saveData.challengeKillZombies],
         ['challengeKill50',             saveData.challengeKill50],
@@ -2202,99 +2146,107 @@ class PlayerStatsChannel {
         const lines = challengeEntries.map(([key, val]) => {
           const info = descs[key];
           if (info) {
-            const target = info.target ? `/${info.target}` : '';
-            const desc = this._config.canShow('showChallengeDescriptions', isAdmin) ? ` — *${info.desc}*` : '';
-            return `**${info.name}**: ${val}${target}${desc}`;
+            const progress = info.target ? `${val}/${info.target}` : `${val}`;
+            return `${val >= (info.target || 1) ? '✅' : '⬜'} ${info.name}: **${progress}**`;
           }
-          return `**${key}**: ${val}`;
+          return `⬜ ${key}: **${val}**`;
         });
-        embed.addFields({ name: `Challenges (${challengeEntries.length}/19)`, value: lines.join('\n').substring(0, 1024) });
+        embed.addFields({ name: `🏆 Challenges (${challengeEntries.length}/19)`, value: lines.join('\n').substring(0, 1024) });
       }
     }
 
-    // ── Unique Items ──
+    // Recipes (compact)
+    if (this._config.canShow('showRecipes', isAdmin) && saveData) {
+      const recipeParts = [];
+      if (this._config.showCraftingRecipes && saveData.craftingRecipes.length > 0) recipeParts.push(`**Crafting (${saveData.craftingRecipes.length}):** ${saveData.craftingRecipes.map(_cleanItemName).join(', ')}`);
+      if (this._config.showBuildingRecipes && saveData.buildingRecipes.length > 0) recipeParts.push(`**Building (${saveData.buildingRecipes.length}):** ${saveData.buildingRecipes.map(_cleanItemName).join(', ')}`);
+      if (recipeParts.length > 0) embed.addFields({ name: '📜 Recipes', value: recipeParts.join('\n').substring(0, 1024) });
+    }
+
+    // Lore
+    if (this._config.canShow('showLore', isAdmin) && saveData?.lore?.length > 0) {
+      embed.addFields({ name: '📖 Lore', value: `${saveData.lore.length} entries collected`, inline: true });
+    }
+
+    // Unique Items
     if (saveData) {
       const uniques = [];
       const foundItems = cleanItemArray(saveData.lootItemUnique || []).map(i => typeof i === 'string' ? i : _cleanItemName(i)).filter(Boolean);
       const craftedItems = cleanItemArray(saveData.craftedUniques || []).map(i => typeof i === 'string' ? i : _cleanItemName(i)).filter(Boolean);
       if (foundItems.length > 0) uniques.push(`**Found:** ${foundItems.join(', ')}`);
       if (craftedItems.length > 0) uniques.push(`**Crafted:** ${craftedItems.join(', ')}`);
-      if (uniques.length > 0) embed.addFields({ name: 'Unique Items', value: uniques.join('\n').substring(0, 1024) });
+      if (uniques.length > 0) embed.addFields({ name: '⭐ Unique Items', value: uniques.join('\n').substring(0, 1024) });
     }
 
-    // ── Connections ──
+    // ═══════════════════════════════════════════════════
+    //  FOOTER — Connections, location, companions
+    // ═══════════════════════════════════════════════════
+
+    // Connections + Last Active (compact inline row)
+    const metaParts = [];
     if (this._config.canShow('showConnections', isAdmin) && logData) {
       const connParts = [];
       if (this._config.showConnectCount && logData.connects > 0) connParts.push(`In: **${logData.connects}**`);
       if (this._config.showConnectCount && logData.disconnects > 0) connParts.push(`Out: **${logData.disconnects}**`);
       if (this._config.showAdminAccess && logData.adminAccess > 0) connParts.push(`Admin: **${logData.adminAccess}**`);
-      if (connParts.length > 0) embed.addFields({ name: 'Connections', value: connParts.join('  ·  '), inline: true });
+      if (connParts.length > 0) metaParts.push(connParts.join(' · '));
     }
-
-    // ── Last Activity ──
     if (resolved.lastActive) {
       const lastDate = new Date(resolved.lastActive);
-      const dateStr = `${lastDate.toLocaleDateString('en-GB')} ${lastDate.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}`;
-      embed.addFields({ name: 'Last Active', value: dateStr, inline: true });
+      const dateStr = `${lastDate.toLocaleDateString('en-GB', { timeZone: this._config.botTimezone })} ${lastDate.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: this._config.botTimezone })}`;
+      metaParts.push(`Last seen: ${dateStr}`);
     }
+    if (metaParts.length > 0) embed.addFields({ name: '🔗 Connections', value: metaParts.join('\n'), inline: true });
 
-    // ── Coordinates ──
+    // Location
     if (this._config.canShow('showCoordinates', isAdmin) && saveData && saveData.x !== null && saveData.x !== 0) {
-      const dir = saveData.rotationYaw !== null
-        ? ` | Facing: ${saveData.rotationYaw}°`
-        : '';
-      embed.addFields({ name: '📍 Location', value: `X: **${Math.round(saveData.x)}** · Y: **${Math.round(saveData.y)}** · Z: **${Math.round(saveData.z)}**${dir}`, inline: true });
+      const dir = saveData.rotationYaw !== null ? ` · ${saveData.rotationYaw}°` : '';
+      embed.addFields({ name: '📍 Location', value: `${Math.round(saveData.x)}, ${Math.round(saveData.y)}, ${Math.round(saveData.z)}${dir}`, inline: true });
     }
 
-    // ── Horses ──
-    if (this._config.canShow('showHorses', isAdmin) && saveData?.horses?.length > 0) {
-      const horseLines = saveData.horses.map(h => {
-        const hName = h.displayName || h.name || _cleanItemName(h.class || 'Horse');
-        const parts = [];
-        // Health with max
-        if (h.health != null) {
-          const hpStr = h.maxHealth > 0
-            ? `${Math.round(h.health)}/${Math.round(h.maxHealth)}`
-            : `${Math.round(h.health)}`;
-          parts.push(`HP: **${hpStr}**`);
+    // Horses + Companions (combined)
+    if (this._config.canShow('showHorses', isAdmin) && saveData) {
+      const animalLines = [];
+
+      if (saveData.horses?.length > 0) {
+        for (const h of saveData.horses) {
+          const hName = h.displayName || h.name || _cleanItemName(h.class || 'Horse');
+          const parts = [];
+          if (h.health != null) {
+            const hpStr = h.maxHealth > 0 ? `${Math.round(h.health)}/${Math.round(h.maxHealth)}` : `${Math.round(h.health)}`;
+            parts.push(`HP: ${hpStr}`);
+          }
+          if (h.energy != null) parts.push(`E: ${Math.round(h.energy)}`);
+          const invItems = [...(h.saddleInventory || []), ...(h.inventory || [])]
+            .filter(i => i?.item)
+            .map(i => _cleanItemName(i.item));
+          if (invItems.length > 0) parts.push(`${invItems.length} items`);
+          animalLines.push(`🐴 **${hName}** — ${parts.join(' · ') || 'No stats'}`);
         }
-        if (h.energy != null) parts.push(`Energy: **${Math.round(h.energy)}**`);
-        if (h.stamina != null && h.stamina > 0) parts.push(`Stamina: **${Math.round(h.stamina)}**`);
-        const line = parts.length > 0 ? `🐴 ${hName} · ${parts.join(' · ')}` : `🐴 ${hName}`;
+      }
 
-        // Saddle / horse inventory
-        const allInv = [...(h.saddleInventory || []), ...(h.inventory || [])];
-        const invItems = allInv.filter(i => i && i.item).map(i => {
-          const name = _cleanItemName(i.item);
-          return i.amount > 1 ? `${name} x${i.amount}` : name;
-        });
-        if (invItems.length > 0) {
-          return `${line}\n> Carrying: ${invItems.slice(0, 10).join(', ')}${invItems.length > 10 ? ` +${invItems.length - 10} more` : ''}`;
+      if (saveData.companionData?.length > 0) {
+        for (const c of saveData.companionData) {
+          const cName = c.displayName || c.name || _cleanItemName(c.class || 'Companion');
+          const hp = c.health != null ? ` — HP: ${Math.round(c.health)}` : '';
+          animalLines.push(`🐕 **${cName}**${hp}`);
         }
-        return line;
-      });
-      embed.addFields({ name: `Horses (${saveData.horses.length})`, value: horseLines.join('\n').substring(0, 1024) });
+      }
+
+      if (animalLines.length > 0) {
+        embed.addFields({ name: '🐾 Animals', value: animalLines.join('\n').substring(0, 1024) });
+      }
     }
 
-    // ── Companions ──
-    if (this._config.canShow('showHorses', isAdmin) && saveData?.companionData?.length > 0) {
-      const compLines = saveData.companionData.map(c => {
-        const cName = c.displayName || c.name || _cleanItemName(c.class || 'Companion');
-        const hp = c.health != null ? ` · HP: **${Math.round(c.health)}**` : '';
-        return `🐕 ${cName}${hp}`;
-      });
-      embed.addFields({ name: `Companions (${saveData.companionData.length})`, value: compLines.join('\n').substring(0, 1024) });
-    }
-
-    // ── Anti-Cheat Flags (admin only) ──
+    // Anti-Cheat Flags (admin only)
     if (isAdmin && logData?.cheatFlags && logData.cheatFlags.length > 0) {
       const flagLines = logData.cheatFlags.slice(-5).map(f => {
         const d = new Date(f.timestamp);
-        const dateStr = d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+        const dateStr = d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', timeZone: this._config.botTimezone });
         return `${dateStr} — \`${f.type}\``;
       });
-      if (logData.cheatFlags.length > 5) flagLines.unshift(`_Showing last 5 of ${logData.cheatFlags.length} flags_`);
-      embed.addFields({ name: 'Anti-Cheat Flags', value: flagLines.join('\n') });
+      if (logData.cheatFlags.length > 5) flagLines.unshift(`*Showing last 5 of ${logData.cheatFlags.length} flags*`);
+      embed.addFields({ name: '🚩 Anti-Cheat Flags', value: flagLines.join('\n') });
     }
 
     return embed;

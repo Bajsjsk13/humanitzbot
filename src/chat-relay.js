@@ -13,9 +13,6 @@ const JOIN_RE = /^Player Joined \(<PN>(.+?)<\/>\)$/;
 const LEFT_RE = /^Player Left \(<PN>(.+?)<\/>\)$/;
 // Player died:   Player Died (<PN>PlayerName</>)
 const DIED_RE = /^Player Died \(<PN>(.+?)<\/>\)$/;
-// Bot-generated admin broadcasts are prefixed with [Bot].
-// Admin *player* messages have no [Bot] prefix (just "[Admin] Name: text" or "[Admin]<PN>Name:</>text").
-const BOT_ADMIN_RE = /^\[Admin\]\s*\[Bot\]/;
 // Plain chat fallback — admin player lines may lack <PN> tags
 const PLAIN_CHAT_RE = /^([^:<>\n]{1,32}):\s*(.+)$/;
 // Strip [Admin] prefix from admin player lines so the other regexes can match
@@ -386,9 +383,15 @@ class ChatRelay {
       }
     }
 
-    // Acknowledge in-game (plain text — no color needed for acknowledgements)
+    // Acknowledge in-game — name white, rest gray, discord blue
     try {
-      await this._rcon.send(`admin [Bot] ${name}, your request has been sent to the admins. Join our Discord for faster help: ${this._config.discordInviteLink}`);
+      const link = this._config.discordInviteLink || '';
+      let linkPart = '';
+      if (link) {
+        const m = link.match(/^(.*?discord\.gg)(\/.*)$/i);
+        linkPart = m ? ` </><CL>${m[1]}</><FO>${m[2] || ''}` : ` ${link}`;
+      }
+      await this._rcon.send(`admin </>${name}<FO>, your request has been sent to the admins.${linkPart}`);
     } catch (_) {}
   }
 
@@ -398,8 +401,7 @@ class ChatRelay {
    * Returns { formatted, entry } or null if the line should be skipped.
    */
   _parseLine(line) {
-    // Skip bot-generated admin broadcasts (no <PN> tag = sent by us, not a player)
-    if (BOT_ADMIN_RE.test(line)) return null;
+
 
     // Strip [Admin] prefix so admin players' messages match the regular regexes
     const cleaned = stripAdminPrefix(line);
@@ -498,7 +500,8 @@ class ChatRelay {
       let displayName = message.member?.displayName || message.author.displayName || message.author.username;
       displayName = this._sanitizeRcon(displayName).replace(/[^a-zA-Z0-9 _\-.']/g, '').slice(0, 32) || 'User';
       text = this._sanitizeRcon(text);
-      await this._rcon.send(`admin [Bot] [Discord] ${displayName}: ${text}`);
+      await this._rcon.send(`admin </><CL>[Discord]</> ${displayName}<FO>: ${text}`);
+
       // Log outbound message to DB
       this._logChat({
         type: 'discord_to_game',

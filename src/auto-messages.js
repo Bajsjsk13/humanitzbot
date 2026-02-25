@@ -25,16 +25,38 @@ function spawnLabel(val) {
   return `x${n}`;
 }
 
-// ── Color tag helpers for WelcomeMessage.txt ──────────────────
-const { COLOR, color } = require('./rcon-colors');
+// ── Color tag helpers for RCON messages ──────────────────
+const { COLOR, color, rconColor, colorOpen, white } = require('./rcon-colors');
 
 /**
- * Colorize a Discord invite link: "Discord" → blue, rest stays white.
- * e.g. "Discord.gg/CODE" → "<CL>Discord</>.gg/CODE"
+ * Color helper for WelcomeMessage.txt file context.
+ * Unlike RCON admin commands, the welcome file needs explicit closing tags:
+ *   <TAG>text</>
+ * This matches the game's rich text parser for the welcome popup.
+ */
+function fileColor(tag, text) {
+  return `<${COLOR[tag] || tag}>${text}</>`;
+}
+
+/**
+ * Colorize a Discord invite link for WelcomeMessage.txt:
+ * "Discord" portion → blue, rest unchanged.
  */
 function _colorLink(link) {
   if (!link) return '';
-  return link.replace(/discord/i, (m) => color('blue', m));
+  return link.replace(/discord/i, (m) => fileColor('blue', m));
+}
+
+/**
+ * Colorize a Discord invite link for RCON admin messages:
+ * "discord.gg" → blue, the ID after → back to gray.
+ * Caller is responsible for the surrounding color context.
+ */
+function _rconColorLink(link) {
+  if (!link) return '';
+  const m = link.match(/^(.*?discord\.gg)(\/.*)$/i);
+  if (!m) return link;
+  return `</><CL>${m[1]}</><FO>${m[2] || ''}`;
 }
 
 // ── Standalone helpers (used by buildWelcomeContent and class) ──
@@ -126,7 +148,7 @@ function difficultyScheduleLines(cfg) {
 
   // Build lines — iterate by time slot, resolve profile via rotation
   const lines = [];
-  lines.push(color('ember', '--- Difficulty Schedule ---'));
+  lines.push(fileColor('ember', '--- Difficulty Schedule ---'));
   for (let slotIdx = 0; slotIdx < times.length; slotIdx++) {
     const profileIdx = getRotatedProfileIndex(slotIdx, profiles.length, dayOffset);
     const name = profiles[profileIdx];
@@ -152,10 +174,12 @@ function difficultyScheduleLines(cfg) {
     const isActive = slotIdx === activeSlot;
     const marker = isActive ? ' \u25c0 NOW' : '';
     const nameDisplay = name.charAt(0).toUpperCase() + name.slice(1);
+    const profileColors = { calm: 'green', surge: 'ember', horde: 'red' };
+    const nameColor = profileColors[name] || 'gray';
     if (isActive) {
-      lines.push(`${color('green', nameDisplay)} ${color('gray', label)} ${color('gray', descStr)}${color('ember', marker)}`);
+      lines.push(`${fileColor(nameColor, nameDisplay)} ${fileColor('gray', label)} ${fileColor('gray', descStr)}${fileColor('ember', marker)}`);
     } else {
-      lines.push(`${color('gray', nameDisplay)} ${color('gray', label)} ${color('gray', descStr)}`);
+      lines.push(`${fileColor(nameColor, nameDisplay)} ${fileColor('gray', label)} ${fileColor('gray', descStr)}`);
     }
   }
   return lines;
@@ -183,7 +207,7 @@ async function buildWelcomeContent(deps = {}) {
   }
   serverName = serverName.replace(/\s*[-\u2013\u2014|\xb7:]*\s*discord\.\w+\/\S*/gi, '').trim();
   if (serverName.length > 60) serverName = serverName.substring(0, 57) + '...';
-  parts.push(color('ember', serverName ? `Welcome to ${serverName}!` : 'Welcome to the server!'));
+  parts.push(fileColor('ember', serverName ? `Welcome to ${serverName}!` : 'Welcome to the server!'));
 
   // ── Key Settings ──
   if (Object.keys(settings).length > 0) {
@@ -195,12 +219,12 @@ async function buildWelcomeContent(deps = {}) {
     if (settings.LootRespawnTimer) sp.push(`Loot: ${settings.LootRespawnTimer}m`);
     const pvpOn = settings.PVP === '1' || settings.PVP === 'true';
     sp.push(`PvP: ${pvpOn ? 'On' : 'Off'}`);
-    if (sp.length > 0) parts.push(color('gray', sp.join('  |  ')));
+    if (sp.length > 0) parts.push(fileColor('gray', sp.join('  |  ')));
   }
 
   // ── PvP schedule ──
   const pvpLabel = pvpScheduleLabel();
-  if (pvpLabel) parts.push(color('ember', pvpLabel));
+  if (pvpLabel) parts.push(fileColor('ember', pvpLabel));
 
   // ── Dynamic difficulty schedule ──
   const scheduleLines = difficultyScheduleLines(cfg);
@@ -214,7 +238,7 @@ async function buildWelcomeContent(deps = {}) {
   const RANKS = ['1st', '2nd', '3rd'];
   function inlineRow(entries, colorTag) {
     return entries.map((text, i) =>
-      `${color(colorTag, RANKS[i])} ${text}`
+      `${fileColor(colorTag, RANKS[i])} ${text}`
     ).join('  |  ');
   }
 
@@ -224,54 +248,51 @@ async function buildWelcomeContent(deps = {}) {
 
   if (leaderboard.length > 0) {
     parts.push('');
-    parts.push(color('ember', '--- Top Survivors ---'));
+    parts.push(fileColor('ember', '--- Top Survivors ---'));
     const top = leaderboard.slice(0, 3).map(e =>
-      `${color('green', e.name)} - ${color('gray', formatMs(e.totalMs))}`
+      `${fileColor('green', e.name)} - ${fileColor('gray', formatMs(e.totalMs))}`
     );
     parts.push(inlineRow(top, 'ember'));
   }
 
   if (welcomeStats.topKillers && welcomeStats.topKillers.length > 0) {
-    parts.push(color('ember', '--- Top Zombie Killers ---'));
+    parts.push(fileColor('ember', '--- Top Zombie Killers ---'));
     const topK = welcomeStats.topKillers.slice(0, 3).map(e =>
-      `${color('green', e.name)} - ${color('gray', e.kills.toLocaleString() + ' kills')}`
+      `${fileColor('green', e.name)} - ${fileColor('gray', e.kills.toLocaleString() + ' kills')}`
     );
     parts.push(inlineRow(topK, 'ember'));
   }
 
   if (welcomeStats.topPvpKillers && welcomeStats.topPvpKillers.length > 0) {
-    parts.push(color('ember', '--- Top PvP Killers ---'));
+    parts.push(fileColor('ember', '--- Top PvP Killers ---'));
     const topP = welcomeStats.topPvpKillers.slice(0, 3).map(e =>
-      `${color('green', e.name)} - ${color('gray', e.kills + ' kills')}`
+      `${fileColor('green', e.name)} - ${fileColor('gray', e.kills + ' kills')}`
     );
     parts.push(inlineRow(topP, 'ember'));
   }
 
-  // ── Fun stats (compact single-line each) ──
+  // ── Fun stats (compact single-line: top fisher + most bitten) ──
+  const funParts = [];
   if (welcomeStats.topFishers && welcomeStats.topFishers.length > 0) {
-    parts.push(color('ember', '--- Top Fishers ---'));
-    const topF = welcomeStats.topFishers.slice(0, 3).map(e =>
-      `${color('green', e.name)} - ${color('gray', e.count + ' fish')}`
-    );
-    parts.push(inlineRow(topF, 'ember'));
+    const f = welcomeStats.topFishers[0];
+    funParts.push(`${fileColor('ember', 'Top Fisher:')} ${fileColor('green', f.name)} ${fileColor('gray', f.count + ' fish')}`);
   }
-
   if (welcomeStats.topBitten && welcomeStats.topBitten.length > 0) {
-    parts.push(color('ember', '--- Most Bitten ---'));
-    const topB = welcomeStats.topBitten.slice(0, 3).map(e =>
-      `${color('green', e.name)} - ${color('gray', e.count + ' bites')}`
-    );
-    parts.push(inlineRow(topB, 'ember'));
+    const b = welcomeStats.topBitten[0];
+    funParts.push(`${fileColor('ember', 'Most Bitten:')} ${fileColor('green', b.name)} ${fileColor('gray', b.count + ' bites')}`);
+  }
+  if (funParts.length > 0) {
+    parts.push(funParts.join('  |  '));
   }
 
   // ── Clans (each on own line for clarity) ──
   if (welcomeStats.topClans && welcomeStats.topClans.length > 0) {
-    parts.push(color('ember', '--- Top Clans ---'));
+    parts.push(fileColor('ember', '--- Top Clans ---'));
     const topC = welcomeStats.topClans.slice(0, 3);
     topC.forEach((c, i) => {
       const pt = formatMs(c.playtimeMs || 0);
       const mem = c.members === 1 ? '1 member' : `${c.members} members`;
-      parts.push(`${color('ember', RANKS[i])} ${color('green', c.name)} ${color('gray', '(' + mem + ')')} - ${color('gray', c.kills.toLocaleString() + ' kills')} - ${color('gray', pt + ' played')}`);
+      parts.push(`${fileColor('ember', RANKS[i])} ${fileColor('green', c.name)} ${fileColor('gray', '(' + mem + ')')} - ${fileColor('gray', c.kills.toLocaleString() + ' kills')} - ${fileColor('gray', pt + ' played')}`);
     });
   }
 
@@ -279,12 +300,12 @@ async function buildWelcomeContent(deps = {}) {
   const w = welcomeStats.weekly;
   if (w) {
     const wp = [];
-    if (w.topKillers?.length > 0)    wp.push(`${color('ember', 'Kills:')} ${color('green', w.topKillers[0].name)} ${color('gray', String(w.topKillers[0].kills))}`);
-    if (w.topPvpKillers?.length > 0) wp.push(`${color('ember', 'PvP:')} ${color('green', w.topPvpKillers[0].name)} ${color('gray', String(w.topPvpKillers[0].kills))}`);
-    if (w.topPlaytime?.length > 0)   wp.push(`${color('ember', 'Time:')} ${color('green', w.topPlaytime[0].name)} ${color('gray', formatMs(w.topPlaytime[0].ms))}`);
-    if (w.topFishers?.length > 0)    wp.push(`${color('ember', 'Fish:')} ${color('green', w.topFishers[0].name)} ${color('gray', String(w.topFishers[0].count))}`);
+    if (w.topKillers?.length > 0)    wp.push(`${fileColor('ember', 'Kills:')} ${fileColor('green', w.topKillers[0].name)} ${fileColor('gray', String(w.topKillers[0].kills))}`);
+    if (w.topPvpKillers?.length > 0) wp.push(`${fileColor('ember', 'PvP:')} ${fileColor('green', w.topPvpKillers[0].name)} ${fileColor('gray', String(w.topPvpKillers[0].kills))}`);
+    if (w.topPlaytime?.length > 0)   wp.push(`${fileColor('ember', 'Time:')} ${fileColor('green', w.topPlaytime[0].name)} ${fileColor('gray', formatMs(w.topPlaytime[0].ms))}`);
+    if (w.topFishers?.length > 0)    wp.push(`${fileColor('ember', 'Fish:')} ${fileColor('green', w.topFishers[0].name)} ${fileColor('gray', String(w.topFishers[0].count))}`);
     if (wp.length > 0) {
-      parts.push(color('ember', '--- This Week ---'));
+      parts.push(fileColor('ember', '--- This Week ---'));
       parts.push(wp.join('  |  '));
     }
   }
@@ -300,18 +321,17 @@ async function buildWelcomeContent(deps = {}) {
     if (totalBuilds > 0) sp.push(`${totalBuilds} Builds`);
     if (totalLooted > 0) sp.push(`${totalLooted} Looted`);
     if (sp.length > 0) {
-      parts.push('');
-      parts.push(color('gray', sp.join('  |  ')));
+      parts.push(fileColor('gray', sp.join('  |  ')));
     }
   }
 
   // ── Update note ──
-  const updateInfo = color('gray', 'Updated each restart');
+  const updateInfo = fileColor('gray', 'Updated each restart');
 
   if (cfg.discordInviteLink) {
-    parts.push(`Type ${color('red', '!admin')} for help  |  Join our ${color('blue', 'Discord:')} ${_colorLink(cfg.discordInviteLink)}  |  ${updateInfo}`);
+    parts.push(`Type ${fileColor('red', '!admin')} for help  |  Join our ${fileColor('blue', 'Discord:')} ${_colorLink(cfg.discordInviteLink)}  |  ${updateInfo}`);
   } else {
-    parts.push(`Type ${color('red', '!admin')} in chat for help  |  ${updateInfo}`);
+    parts.push(`Type ${fileColor('red', '!admin')} in chat for help  |  ${updateInfo}`);
   }
 
   return parts.join('\n');
@@ -429,7 +449,7 @@ class AutoMessages {
       const custom = this._config.autoMsgLinkText;
       const msg = custom
         ? await this._resolveMessagePlaceholders(custom)
-        : `Join our ${color('blue', 'Discord!')} ${this._colorLink(this.discordLink)}`;
+        : `<FO>Join our </><CL>Discord</><FO>! ${_rconColorLink(this.discordLink)}`;
       await this._sendAdminMessage(msg);
       console.log(`[${this._label}] Sent Discord link to game chat`);
     } catch (err) {
@@ -442,7 +462,7 @@ class AutoMessages {
       const custom = this._config.autoMsgPromoText;
       const msg = custom
         ? await this._resolveMessagePlaceholders(custom)
-        : `${color('gray', 'Have any issues, suggestions or just want to keep in contact with other players?')} Join our ${color('blue', 'Discord:')} ${this._colorLink(this.discordLink)}`;
+        : `<FO>Issues, suggestions, or just want to connect? ${_rconColorLink(this.discordLink)}`;
       await this._sendAdminMessage(msg);
       console.log(`[${this._label}] Sent promo message to game chat`);
     } catch (err) {
@@ -506,22 +526,15 @@ class AutoMessages {
 
     try {
       const pt = joiner.steamId ? this._playtime.getPlaytime(joiner.steamId) : null;
-      const pvpInfo = this._pvpScheduleText();
       const diffInfo = this._difficultyText();
-      const discordPart = this.discordLink ? ` Join our ${color('blue', 'Discord:')} ${this._colorLink(this.discordLink)}` : '';
-      const adminTip = ` Type ${color('red', '!admin')} in chat if you need help from an admin.`;
+      const link = this.discordLink ? `</><SP> | ${_rconColorLink(this.discordLink)}` : '';
 
+      const sep = '</><SP> | </>';
       let msg;
       if (pt && pt.isReturning) {
-        // Returning player — include playtime info
-        const firstDate = pt.firstSeen
-          ? new Date(pt.firstSeen).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })
-          : null;
-        const sincePart = firstDate ? ` since ${firstDate}` : '';
-        msg = `${color('ember', `Welcome back, ${joiner.name}!`)} ${color('gray', `Your total playtime${sincePart} is ${pt.totalFormatted}.`)}${diffInfo}${pvpInfo}${adminTip}${discordPart}`;
+        msg = `<FO>Welcome back, </>${joiner.name}<FO>!${sep}<FO>Playtime: ${pt.totalFormatted}${diffInfo}${link}`;
       } else {
-        // First-time player
-        msg = `${color('ember', `Welcome to the server, ${joiner.name}!`)} ${color('gray', 'Settings rotate every 8h — check the welcome screen for the current window.')}${diffInfo}${pvpInfo}${adminTip}${discordPart}`;
+        msg = `<FO>Welcome, </>${joiner.name}<FO>!${diffInfo}${link}`;
       }
 
       await this._sendAdminMessage(msg);
@@ -571,7 +584,10 @@ class AutoMessages {
     const hrs = Math.floor(minsLeft / 60);
     const mins = minsLeft % 60;
     const timeLeft = hrs > 0 ? `${hrs}h ${mins}m` : `${mins}m`;
-    return ` ${color('ember', `Current: ${displayName}`)} ${color('gray', `(${timeLeft} left)`)}`;
+    // Profile color: calm=green, surge=ember, horde=red
+    const profileColors = { calm: 'PR', surge: 'SP', horde: 'PN' };
+    const ptag = profileColors[name] || 'FO';
+    return `</><SP> | </><FO>Difficulty: </><${ptag}>${displayName}</><FO> (</><PR>${timeLeft}</><FO> left)`;
   }
 
   _pvpScheduleText() {

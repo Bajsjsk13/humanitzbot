@@ -172,6 +172,7 @@ function parseAndWrite(savePath, outputPath) {
     containers: result.containers,
     lootActors: result.lootActors,
     quests: result.quests,
+    horses: result.horses,
   };
 
   const json = JSON.stringify(cache);

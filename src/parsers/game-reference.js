@@ -23,6 +23,13 @@ const {
   LOADING_TIPS,
   SKILL_EFFECTS,
   SERVER_SETTING_DESCRIPTIONS,
+  ITEM_DATABASE,
+  CRAFTING_RECIPES,
+  LORE_ENTRIES,
+  QUEST_DATA,
+  SPAWN_LOCATIONS,
+  SKILL_DETAILS,
+  AFFLICTION_DETAILS,
 } = require('../game-data');
 
 // ─── Seed all game reference data ──────────────────────────────────────────
@@ -40,6 +47,11 @@ function seed(db) {
   seedChallenges(db);
   seedLoadingTips(db);
   seedServerSettingDefs(db);
+  seedItems(db);
+  seedRecipes(db);
+  seedLore(db);
+  seedQuests(db);
+  seedSpawnLocations(db);
 
   db._setMeta('game_ref_seeded', new Date().toISOString());
   console.log('[GameRef] All game reference data seeded');
@@ -78,10 +90,16 @@ function _enumIndex(enumValue) {
 // ─── Afflictions ────────────────────────────────────────────────────────────
 
 function seedAfflictions(db) {
+  // Merge AFFLICTION_MAP (indexed array) with AFFLICTION_DETAILS (descriptions)
+  const detailsByName = {};
+  for (const [, detail] of Object.entries(AFFLICTION_DETAILS)) {
+    detailsByName[detail.name] = detail;
+  }
+
   const afflictions = AFFLICTION_MAP.map((name, idx) => ({
     idx,
     name,
-    description: '',  // Could be enhanced from pak data
+    description: detailsByName[name]?.description || '',
     icon: '',
   }));
   db.seedGameAfflictions(afflictions);
@@ -90,14 +108,23 @@ function seedAfflictions(db) {
 // ─── Skills ─────────────────────────────────────────────────────────────────
 
 function seedSkills(db) {
-  const skills = Object.entries(SKILL_EFFECTS).map(([id, effect]) => ({
-    id,
-    name: id.charAt(0).toUpperCase() + id.slice(1).toLowerCase().replace(/_/g, ' '),
-    description: '',
-    effect,
-    category: _inferSkillCategory(id),
-    icon: '',
-  }));
+  // Merge SKILL_EFFECTS (id→effect) with SKILL_DETAILS (full data from DT_Skills)
+  const detailsByName = {};
+  for (const [, detail] of Object.entries(SKILL_DETAILS)) {
+    detailsByName[detail.name.toUpperCase()] = detail;
+  }
+
+  const skills = Object.entries(SKILL_EFFECTS).map(([id, effect]) => {
+    const detail = detailsByName[id] || {};
+    return {
+      id,
+      name: detail.name || id.charAt(0).toUpperCase() + id.slice(1).toLowerCase().replace(/_/g, ' '),
+      description: detail.description || '',
+      effect,
+      category: detail.category?.toLowerCase() || _inferSkillCategory(id),
+      icon: '',
+    };
+  });
   db.seedGameSkills(skills);
 }
 
@@ -193,6 +220,111 @@ function _inferSettingType(key) {
   if (/mode|level/i.test(key)) return 'enum';
   if (/name/i.test(key)) return 'string';
   return 'string';
+}
+
+// ─── Items (game_items — 718 entries) ───────────────────────────────────────
+
+function seedItems(db) {
+  const items = Object.entries(ITEM_DATABASE).map(([id, item]) => ({
+    id,
+    name: item.name,
+    description: item.description || '',
+    category: item.type || '',
+    icon: '',
+    blueprint: '',
+    stackSize: item.stack || 1,
+    extra: {
+      weight: item.weight,
+      tradeValue: item.tradeValue,
+      playerValue: item.playerValue,
+      durabilityLoss: item.durabilityLoss,
+      doesDecay: item.doesDecay,
+      armorValue: item.armorValue,
+      warmthValue: item.warmthValue,
+      isSkillBook: item.isSkillBook,
+      spawnChance: item.spawnChance,
+    },
+  }));
+  db.seedGameItems(items);
+}
+
+// ─── Recipes (game_recipes — 154 entries) ───────────────────────────────────
+
+function seedRecipes(db) {
+  const stmt = db.db.prepare(
+    'INSERT OR REPLACE INTO game_recipes (id, name, type, station, ingredients, result, extra) VALUES (?, ?, ?, ?, ?, ?, ?)'
+  );
+
+  const tx = db.db.transaction(() => {
+    for (const [id, recipe] of Object.entries(CRAFTING_RECIPES)) {
+      stmt.run(
+        id,
+        recipe.name,
+        'crafting',
+        recipe.station || '',
+        JSON.stringify(recipe.ingredients || []),
+        recipe.result || '',
+        JSON.stringify({ resultAmount: recipe.resultAmount || 1 })
+      );
+    }
+  });
+  tx();
+}
+
+// ─── Lore (game_lore — 12 entries) ──────────────────────────────────────────
+
+function seedLore(db) {
+  const stmt = db.db.prepare(
+    'INSERT OR REPLACE INTO game_lore (id, title, text, location) VALUES (?, ?, ?, ?)'
+  );
+
+  const tx = db.db.transaction(() => {
+    for (const [id, lore] of Object.entries(LORE_ENTRIES)) {
+      const text = [lore.byline, lore.author, lore.body].filter(Boolean).join('\n\n');
+      stmt.run(id, lore.title || '', text, lore.type || '');
+    }
+  });
+  tx();
+}
+
+// ─── Quests (game_quests — 18 entries) ──────────────────────────────────────
+
+function seedQuests(db) {
+  const stmt = db.db.prepare(
+    'INSERT OR REPLACE INTO game_quests (id, name, description, objectives, rewards, extra) VALUES (?, ?, ?, ?, ?, ?)'
+  );
+
+  const tx = db.db.transaction(() => {
+    for (const [id, quest] of Object.entries(QUEST_DATA)) {
+      stmt.run(
+        id,
+        quest.name,
+        '',
+        '[]',
+        JSON.stringify([
+          quest.xp ? { type: 'xp', amount: quest.xp } : null,
+          quest.skillPoint ? { type: 'skillPoint', amount: quest.skillPoint } : null,
+        ].filter(Boolean)),
+        JSON.stringify({ next: quest.next || '', dependsOn: quest.dependsOn || '' })
+      );
+    }
+  });
+  tx();
+}
+
+// ─── Spawn locations (game_spawn_locations — 10 entries) ────────────────────
+
+function seedSpawnLocations(db) {
+  const stmt = db.db.prepare(
+    'INSERT OR REPLACE INTO game_spawn_locations (id, name, description, type, image) VALUES (?, ?, ?, ?, ?)'
+  );
+
+  const tx = db.db.transaction(() => {
+    for (const [id, spawn] of Object.entries(SPAWN_LOCATIONS)) {
+      stmt.run(id, spawn.name, spawn.description || '', '', '');
+    }
+  });
+  tx();
 }
 
 module.exports = { seed };

@@ -15,6 +15,8 @@
  * @module ue4-names
  */
 
+const { ITEM_NAMES, BUILDING_NAMES } = require('./game-data');
+
 // ─── Common container aliases ────────────────────────────────────────────────
 // These fire first to catch well-known patterns before generic cleanup.
 const CONTAINER_ALIASES = [
@@ -55,6 +57,9 @@ function cleanName(raw) {
 
   // Already clean (no underscores, no BP_ prefix, has spaces) — return as-is
   if (!name.includes('_') && !name.startsWith('BP_')) {
+    // Check BUILDING_NAMES for CamelCase building names (e.g. "WaterCatcher" → "Rain Collector")
+    if (BUILDING_NAMES[name]) return BUILDING_NAMES[name].name;
+
     // But still CamelCase-split: "LockedMetalShutter" → "Locked Metal Shutter"
     if (/[a-z][A-Z]/.test(name)) {
       return name.replace(/([a-z])([A-Z])/g, '$1 $2').trim();
@@ -88,6 +93,9 @@ function cleanName(raw) {
 
   // Strip trailing numeric ID: _12345
   name = name.replace(/_\d+$/, '');
+
+  // Check BUILDING_NAMES for authoritative display name
+  if (BUILDING_NAMES[name]) return BUILDING_NAMES[name].name;
 
   // Check container aliases on the cleaned intermediate
   for (const [pattern, alias] of CONTAINER_ALIASES) {
@@ -213,6 +221,9 @@ function cleanItemName(raw) {
 
   // Strip trailing numeric instance IDs: _12345 (5+ digits)
   name = name.replace(/_\d{5,}$/, '');
+
+  // Check authoritative ITEM_NAMES from game data (718 items)
+  if (ITEM_NAMES[name]) return ITEM_NAMES[name];
 
   // Check alias map (case-insensitive)
   const aliasKey = name.toLowerCase().trim();

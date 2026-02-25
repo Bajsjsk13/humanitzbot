@@ -17,13 +17,47 @@ const COLOR = {
 };
 
 /**
- * Wrap text in an RCON color tag pair.
+ * Wrap text in an RCON color tag (simple open tag, no close).
+ * Works in WelcomeMessage.txt and other file contexts.
  * @param {string} tag  A key from COLOR (e.g. 'ember') or a raw tag code (e.g. 'SP')
  * @param {string} text The text to colorise
- * @returns {string} e.g. `<SP>Hello</>`
+ * @returns {string} e.g. `<SP>Hello`
  */
 function color(tag, text) {
-  return `<${COLOR[tag] || tag}>${text}</>`;
+  return `<${COLOR[tag] || tag}>${text}`;
+}
+
+/**
+ * Color tag for RCON admin commands — close previous color first.
+ * Admin messages start in yellow; each new color needs </> before opening.
+ * Never end a message with </> (renders visibly).
+ * @param {string} tag  A key from COLOR or raw tag code
+ * @param {string} text
+ * @returns {string} e.g. `</><SP>Hello`
+ */
+function rconColor(tag, text) {
+  return `</><${COLOR[tag] || tag}>${text}`;
+}
+
+/**
+ * Open a color tag without closing the previous one.
+ * Use for the first tag in an admin message (no prior color to close)
+ * or in file contexts.
+ * @param {string} tag  A key from COLOR or raw tag code
+ * @param {string} text
+ * @returns {string} e.g. `<FO>Hello`
+ */
+function colorOpen(tag, text) {
+  return `<${COLOR[tag] || tag}>${text}`;
+}
+
+/**
+ * Switch to white in an admin command (close current color).
+ * @param {string} text
+ * @returns {string}
+ */
+function white(text) {
+  return `</>${text}`;
 }
 
 /**
@@ -37,4 +71,4 @@ function stripColorTags(text) {
   return text.replace(/<(?:PN|PR|SP|FO|CL|\/)>/g, '');
 }
 
-module.exports = { COLOR, color, stripColorTags };
+module.exports = { COLOR, color, rconColor, colorOpen, white, stripColorTags };

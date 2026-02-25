@@ -22,92 +22,83 @@ function buildPlayerEmbed(stats, { isAdmin = false, playtime, config } = {}) {
   // Get playtime data if available
   const pt = pt_inst.getPlaytime(stats.id);
 
-  // ── General Info (inline row) ──
-  const infoFields = [];
-  if (pt) {
-    infoFields.push({ name: 'Playtime', value: pt.totalFormatted, inline: true });
-    infoFields.push({ name: 'Sessions', value: `${pt.sessions}`, inline: true });
-  }
+  // ── Header description (playtime, sessions, last active) ──
+  const descParts = [];
+  if (pt) descParts.push(`⏱️ ${pt.totalFormatted} · ${pt.sessions} session${pt.sessions !== 1 ? 's' : ''}`);
   if (stats.lastEvent) {
     const lastDate = new Date(stats.lastEvent);
     const dateStr = `${lastDate.toLocaleDateString('en-GB', { timeZone: cfg.botTimezone })} ${lastDate.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: cfg.botTimezone })}`;
-    infoFields.push({ name: 'Last Active', value: dateStr, inline: true });
+    descParts.push(`Last seen: ${dateStr}`);
   }
-  if (infoFields.length > 0) embed.addFields(...infoFields);
-
   if (stats.nameHistory && stats.nameHistory.length > 0) {
-    embed.addFields({ name: 'Previous Names', value: stats.nameHistory.map(h => h.name).join(', ') });
+    descParts.push(`*aka ${stats.nameHistory.map(h => h.name).join(', ')}*`);
   }
+  if (descParts.length > 0) embed.setDescription(descParts.join('\n'));
 
-  // ── Combat Stats ──
+  // ── Combat Stats (combined) ──
   const dmgEntries = Object.entries(stats.damageTaken);
   const dmgTotal = dmgEntries.reduce((s, [, c]) => s + c, 0);
+  const killEntries = Object.entries(stats.killedBy || {});
 
-  embed.addFields(
-    { name: 'Deaths', value: `${stats.deaths}`, inline: true },
-    { name: 'Hits Taken', value: `${dmgTotal}`, inline: true },
-    { name: '\u200b', value: '\u200b', inline: true },
-  );
+  const combatLines = [`💀 Deaths: **${stats.deaths}** · 🩸 Hits Taken: **${dmgTotal}**`];
 
   if (dmgEntries.length > 0) {
     const dmgSorted = dmgEntries.sort((a, b) => b[1] - a[1]);
-    const dmgLines = dmgSorted.slice(0, 8).map(([src, count]) => `${src}: **${count}**`);
-    if (dmgEntries.length > 8) dmgLines.push(`_+${dmgEntries.length - 8} more_`);
-    embed.addFields({ name: 'Damage Breakdown', value: dmgLines.join('\n') });
+    const dmgLines = dmgSorted.slice(0, 5).map(([src, count]) => `${src}: **${count}**`);
+    if (dmgEntries.length > 5) dmgLines.push(`*+${dmgEntries.length - 5} more*`);
+    combatLines.push(`\n**Damage Breakdown**\n${dmgLines.join('\n')}`);
   }
 
-  // ── Killed By breakdown ──
-  const killEntries = Object.entries(stats.killedBy || {});
   if (killEntries.length > 0) {
     const killSorted = killEntries.sort((a, b) => b[1] - a[1]);
-    const killLines = killSorted.slice(0, 8).map(([src, count]) => `${src}: **${count}**`);
-    if (killEntries.length > 8) killLines.push(`_+${killEntries.length - 8} more_`);
-    embed.addFields({ name: 'Killed By', value: killLines.join('\n') });
+    const killLines = killSorted.slice(0, 5).map(([src, count]) => `${src}: **${count}**`);
+    if (killEntries.length > 5) killLines.push(`*+${killEntries.length - 5} more*`);
+    combatLines.push(`\n**Killed By**\n${killLines.join('\n')}`);
   }
 
-  // ── Building Stats ──
+  embed.addFields({ name: '⚔️ Combat', value: combatLines.join('\n') });
+
+  // ── Base Activity (building + raids + looting) ──
+  const baseParts = [];
   const buildEntries = Object.entries(stats.buildItems);
   if (buildEntries.length > 0) {
-    const topBuilds = buildEntries.sort((a, b) => b[1] - a[1]).slice(0, 8);
-    const buildLines = topBuilds.map(([item, count]) => `${item}: **${count}**`);
-    if (buildEntries.length > 8) buildLines.push(`_+${buildEntries.length - 8} more_`);
-    embed.addFields({ name: `Building (${stats.builds} total)`, value: buildLines.join('\n') });
-  } else {
-    embed.addFields({ name: 'Building', value: `${stats.builds} total`, inline: true });
+    const topBuilds = buildEntries.sort((a, b) => b[1] - a[1]).slice(0, 4);
+    const buildStr = topBuilds.map(([item, count]) => `${item} x${count}`).join(', ');
+    const moreStr = buildEntries.length > 4 ? ` +${buildEntries.length - 4} more` : '';
+    baseParts.push(`🏗️ **${stats.builds} placed** — ${buildStr}${moreStr}`);
+  } else if (stats.builds > 0) {
+    baseParts.push(`🏗️ **${stats.builds}** placed`);
   }
 
-  // ── Raid Stats ──
   if (cfg.canShow('showRaidStats', isAdmin)) {
-    embed.addFields(
-      { name: 'Attacked', value: `${stats.raidsOut}`, inline: true },
-      { name: 'Destroyed', value: `${stats.destroyedOut}`, inline: true },
-      { name: 'Your Structures Hit', value: `${stats.raidsIn}`, inline: true },
-    );
+    const raidParts = [];
+    if (stats.raidsOut > 0) raidParts.push(`Attacked: **${stats.raidsOut}**`);
+    if (stats.destroyedOut > 0) raidParts.push(`Destroyed: **${stats.destroyedOut}**`);
+    if (stats.raidsIn > 0) raidParts.push(`Raided: **${stats.raidsIn}**`);
+    if (raidParts.length > 0) baseParts.push(`⚒️ ${raidParts.join(' · ')}`);
   }
 
-  // ── Looting ──
-  if (stats.containersLooted > 0) {
-    embed.addFields({ name: 'Containers Looted', value: `${stats.containersLooted}`, inline: true });
-  }
+  if (stats.containersLooted > 0) baseParts.push(`📦 **${stats.containersLooted}** containers looted`);
 
-  // ── Connections ──
+  if (baseParts.length > 0) embed.addFields({ name: '🏠 Base Activity', value: baseParts.join('\n') });
+
+  // ── Connections + Anti-Cheat ──
   if (cfg.canShow('showConnections', isAdmin)) {
     const connParts = [];
-    if (stats.connects !== undefined) connParts.push(`In: **${stats.connects}**`);
-    if (stats.disconnects !== undefined) connParts.push(`Out: **${stats.disconnects}**`);
+    if (stats.connects !== undefined && stats.connects > 0) connParts.push(`In: **${stats.connects}**`);
+    if (stats.disconnects !== undefined && stats.disconnects > 0) connParts.push(`Out: **${stats.disconnects}**`);
     if (stats.adminAccess !== undefined && stats.adminAccess > 0) connParts.push(`Admin: **${stats.adminAccess}**`);
-    if (connParts.length > 0) embed.addFields({ name: 'Connections', value: connParts.join('  ·  '), inline: true });
+    if (connParts.length > 0) embed.addFields({ name: '🔗 Connections', value: connParts.join(' · '), inline: true });
   }
 
-  // ── Anti-Cheat Flags (admin only) ──
   if (isAdmin && stats.cheatFlags && stats.cheatFlags.length > 0) {
     const flagLines = stats.cheatFlags.slice(-5).map(f => {
       const d = new Date(f.timestamp);
       const dateStr = d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', timeZone: cfg.botTimezone });
       return `${dateStr} — \`${f.type}\``;
     });
-    if (stats.cheatFlags.length > 5) flagLines.unshift(`_Showing last 5 of ${stats.cheatFlags.length} flags_`);
-    embed.addFields({ name: 'Anti-Cheat Flags', value: flagLines.join('\n') });
+    if (stats.cheatFlags.length > 5) flagLines.unshift(`*Showing last 5 of ${stats.cheatFlags.length} flags*`);
+    embed.addFields({ name: '🚩 Anti-Cheat Flags', value: flagLines.join('\n') });
   }
 
   return embed;

@@ -381,28 +381,93 @@ class PvpScheduler {
     // Post to daily activity thread
     await this._postToActivityLog(targetPvp);
 
+    // Execute restart
     let restartSucceeded = false;
-    try {
-      await this._rcon.send('RestartNow');
-      console.log(`[${this._label}] Server restart command sent`);
-      restartSucceeded = true;
-    } catch (err) {
-      console.error(`[${this._label}] Restart command failed:`, err.message);
-      // Try QuickRestart as fallback
+    const container = process.env.DOCKER_CONTAINER;
+
+    // Prefer Docker restart when configured — RCON RestartNow doesn't reliably
+    // reinitialise RCON inside a container, leaving the bot unable to reconnect.
+    if (container) {
       try {
-        await this._rcon.send('QuickRestart');
+        const { exec } = require('child_process');
+        await new Promise((resolve, reject) => {
+          exec(`docker restart ${container}`, { timeout: 120000 }, (err) => {
+            if (err) reject(err); else resolve();
+          });
+        });
+        console.log(`[${this._label}] Restart via Docker CLI (${container})`);
         restartSucceeded = true;
-      } catch (err2) {
-        console.error(`[${this._label}] QuickRestart also failed:`, err2.message);
+      } catch (dockerErr) {
+        console.warn(`[${this._label}] Docker restart failed:`, dockerErr.message);
+      }
+    }
+
+    // Fallback: RCON restart (non-Docker setups, or if Docker failed)
+    if (!restartSucceeded) {
+      try {
+        await this._rcon.send('RestartNow');
+        console.log(`[${this._label}] Restart command sent via RCON`);
+        restartSucceeded = true;
+      } catch (err) {
+        console.warn(`[${this._label}] RCON RestartNow failed:`, err.message);
+        try {
+          await this._rcon.send('QuickRestart');
+          console.log(`[${this._label}] Restart via RCON QuickRestart`);
+          restartSucceeded = true;
+        } catch (err2) {
+          console.error(`[${this._label}] All restart methods failed:`, err2.message);
+        }
       }
     }
 
     if (restartSucceeded) {
       this._currentPvp = targetPvp;
+
+      // Post-restart RCON health check — if RCON doesn't reconnect within 90s,
+      // the game server likely failed to bind the RCON port (race condition).
+      // Trigger a second Docker restart to recover.
+      if (container) {
+        this._scheduleRconHealthCheck(container);
+      }
     } else {
       console.error(`[${this._label}] Server restart failed — PvP state unchanged, will retry next tick`);
     }
     this._transitioning = false;
+  }
+
+  /**
+   * After a Docker restart, poll RCON connectivity for up to 90s.
+   * If RCON doesn't come back, the game server likely failed to bind the port.
+   * Trigger a second Docker restart to recover.
+   */
+  _scheduleRconHealthCheck(container) {
+    const checkInterval = 10_000;
+    const maxWait = 90_000;
+    const start = Date.now();
+    console.log(`[${this._label}] RCON health check started — will verify within ${maxWait / 1000}s`);
+
+    const timer = setInterval(async () => {
+      if (this._rcon.connected && this._rcon.authenticated) {
+        clearInterval(timer);
+        console.log(`[${this._label}] RCON health check passed — connected`);
+        return;
+      }
+      if (Date.now() - start >= maxWait) {
+        clearInterval(timer);
+        console.warn(`[${this._label}] RCON health check FAILED — no connection after ${maxWait / 1000}s, restarting container again`);
+        try {
+          const { exec } = require('child_process');
+          await new Promise((resolve, reject) => {
+            exec(`docker restart ${container}`, { timeout: 120000 }, (err) => {
+              if (err) reject(err); else resolve();
+            });
+          });
+          console.log(`[${this._label}] Recovery restart sent (${container})`);
+        } catch (err) {
+          console.error(`[${this._label}] Recovery restart failed:`, err.message);
+        }
+      }
+    }, checkInterval);
   }
 
   async _announce(message) {

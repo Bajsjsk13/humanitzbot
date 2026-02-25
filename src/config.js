@@ -207,16 +207,6 @@ const config = {
   enableLogWatcher: envBool('ENABLE_LOG_WATCHER', true),
   enablePlayerStats: envBool('ENABLE_PLAYER_STATS', true),
   enablePlaytime: envBool('ENABLE_PLAYTIME', true),
-  enablePlayerMap: envBool('ENABLE_PLAYER_MAP', false),
-
-  // Player map settings
-  mapChannelId: process.env.MAP_CHANNEL_ID || '',
-  mapPollInterval: parseInt(process.env.MAP_POLL_INTERVAL, 10) || 300000,  // 5 min default
-  mapWidth: parseInt(process.env.MAP_WIDTH, 10) || 1024,
-  mapShowOffline: envBool('MAP_SHOW_OFFLINE', true),
-  mapShowNames: envBool('MAP_SHOW_NAMES', true),
-  mapImageUrl: process.env.MAP_IMAGE_URL || '',
-
   // Thread mode — when true (default), chat/activity go into daily threads.
   // When false, messages post directly to the channel.
   useChatThreads: envBool('USE_CHAT_THREADS', true),

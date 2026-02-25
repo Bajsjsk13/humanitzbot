@@ -437,6 +437,7 @@ function _parseInventorySlots(r, count) {
 
     let itemName = null, amount = 0, durability = 0;
     let ammo = 0, attachments = [];
+    let cap = 0, weight = 0, maxDur = 0, wetness = 0;
     for (const sp of slotProps) {
       if (sp.name === 'Item' && sp.children) {
         for (const c of sp.children) {
@@ -447,16 +448,24 @@ function _parseInventorySlots(r, count) {
       if (sp.name === 'Durability') durability = sp.value || 0;
       if (sp.name === 'Ammo') ammo = sp.value || 0;
       if (sp.name === 'Attachments' && Array.isArray(sp.value)) attachments = sp.value;
+      if (sp.name === 'Cap') cap = sp.value || 0;
+      if (sp.name === 'Weight') weight = sp.value || 0;
+      if (sp.name === 'MaxDur') maxDur = sp.value || 0;
+      if (sp.name === 'Wetness') wetness = sp.value || 0;
     }
 
     if (itemName && itemName !== 'None' && itemName !== 'Empty') {
       const slot = {
         item: itemName,
         amount,
-        durability: Math.round(durability * 10) / 10,
+        durability: Math.round(durability * 100) / 100,
       };
       if (ammo) slot.ammo = ammo;
       if (attachments.length) slot.attachments = attachments;
+      if (cap) slot.cap = Math.round(cap * 100) / 100;
+      if (weight) slot.weight = Math.round(weight * 10000) / 10000;
+      if (maxDur) slot.maxDur = Math.round(maxDur * 100) / 100;
+      if (wetness) slot.wetness = Math.round(wetness * 100) / 100;
       items.push(slot);
     }
   }

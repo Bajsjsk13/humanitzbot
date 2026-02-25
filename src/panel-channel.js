@@ -27,7 +27,6 @@ const fs = require('fs');
 const path = require('path');
 const config = require('./config');
 const panelApi = require('./panel-api');
-const playerMap = require('./player-map');
 const SftpClient = require('ssh2-sftp-client');
 const { formatBytes, formatUptime } = require('./server-resources');
 const MultiServerManager = require('./multi-server');
@@ -66,8 +65,6 @@ const BTN = {
   ADD_SERVER:   'panel_add_server',
   WELCOME_EDIT: 'panel_welcome_edit',
   BROADCASTS:   'panel_broadcasts',
-  MAP:          'panel_map',
-  HEATMAP:      'panel_heatmap',
   DIAGNOSTICS:  'panel_diagnostics',
   ENV_SYNC:     'panel_env_sync',
 };
@@ -497,28 +494,7 @@ const ENV_CATEGORIES = [
       { env: 'PVP_SETTINGS_OVERRIDES', label: 'Settings Override JSON', style: 'paragraph' },
     ],
   },
-  {
-    id: 'player_map', label: 'Player Map', emoji: '🗺️', group: 2,
-    description: 'Player map tracking & overlay (restart)',
-    restart: true,
-    fields: [
-      { env: 'ENABLE_PLAYER_MAP', label: 'Enable Map (true/false)', cfg: 'enablePlayerMap', type: 'bool' },
-      { env: 'MAP_CHANNEL_ID', label: 'Map Channel ID', cfg: 'mapChannelId' },
-      { env: 'MAP_SHOW_OFFLINE', label: 'Show Offline (true/false)', cfg: 'mapShowOffline', type: 'bool' },
-      { env: 'MAP_SHOW_NAMES', label: 'Show Names (true/false)', cfg: 'mapShowNames', type: 'bool' },
-      { env: 'MAP_POLL_INTERVAL', label: 'Map Poll (ms)', cfg: 'mapPollInterval', type: 'int' },
-    ],
-  },
-  {
-    id: 'player_map2', label: 'Map Appearance', emoji: '🗺️', group: 2,
-    description: 'Map image and size (restart)',
-    restart: true,
-    fields: [
-      { env: 'MAP_WIDTH', label: 'Map Width (px)', cfg: 'mapWidth', type: 'int' },
-      { env: 'MAP_IMAGE_URL', label: 'Custom Map Image URL', cfg: 'mapImageUrl' },
-      { env: 'SHOW_COORDINATES', label: 'Show Coords (true/false)', cfg: 'showCoordinates', type: 'bool' },
-    ],
-  },
+
 ];
 
 // ── Game settings categories ────────────────────────────────
@@ -1002,12 +978,6 @@ class PanelChannel {
       if (id === BTN.ADD_SERVER) {
         return this._handleAddServerButton(interaction);
       }
-      if (id === BTN.MAP) {
-        return this._handleMapButton(interaction, 'players');
-      }
-      if (id === BTN.HEATMAP) {
-        return this._handleMapButton(interaction, 'heatmap');
-      }
       if (id.startsWith('panel_srv_')) {
         return this._handleServerAction(interaction, id);
       }
@@ -1346,7 +1316,6 @@ class PanelChannel {
       { name: 'Log (threads)', key: 'logChannelId' },
       { name: 'Activity Log', key: 'activityLogChannelId' },
       { name: 'Player Stats', key: 'playerStatsChannelId' },
-      { name: 'Map', key: 'mapChannelId' },
       { name: 'Panel', key: 'panelChannelId' },
     ];
     for (const { name, key } of channelDefs) {
@@ -1638,70 +1607,6 @@ class PanelChannel {
     }
 
     await interaction.editReply({ embeds });
-    return true;
-  }
-
-  // ═══════════════════════════════════════════════════════════
-  // Map button handlers
-  // ═══════════════════════════════════════════════════════════
-
-  async _handleMapButton(interaction, type) {
-    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-    
-    if (!this._isAdmin(interaction)) {
-      await interaction.editReply('❌ Only administrators can use panel controls.');
-      return true;
-    }
-
-    if (!config.enablePlayerMap) {
-      await interaction.editReply('🗺️ Player map tracking is not enabled.');
-      return true;
-    }
-
-    try {
-      const { AttachmentBuilder } = require('discord.js');
-      let buf, embed;
-
-      if (type === 'heatmap') {
-        buf = await playerMap.generateHeatmap({ width: config.mapWidth });
-        if (!buf) {
-          await interaction.editReply('❌ Failed to generate heatmap. Map image may not be available.');
-          return true;
-        }
-        const summary = playerMap.getSummary();
-        const attachment = new AttachmentBuilder(buf, { name: 'heatmap.png' });
-        embed = new EmbedBuilder()
-          .setTitle('🔥 Player Activity Heatmap')
-          .setColor(0xe74c3c)
-          .setImage('attachment://heatmap.png')
-          .setDescription(`**${summary.heatmapCells}** active zones · **${summary.totalPoints}** data points`)
-          .setTimestamp();
-        await interaction.editReply({ embeds: [embed], files: [attachment] });
-      } else {
-        buf = await playerMap.generateMapOverlay({
-          showOffline: config.mapShowOffline,
-          showNames: config.mapShowNames,
-          width: config.mapWidth,
-        });
-        if (!buf) {
-          await interaction.editReply('❌ Failed to generate map. Map image may not be available.');
-          return true;
-        }
-        const summary = playerMap.getSummary();
-        const attachment = new AttachmentBuilder(buf, { name: 'player-map.png' });
-        embed = new EmbedBuilder()
-          .setTitle('🗺️ Player Positions')
-          .setColor(0x2ecc71)
-          .setImage('attachment://player-map.png')
-          .setDescription(`**${summary.online}** online · **${summary.offline}** offline · **${summary.totalPlayers}** tracked`)
-          .setFooter({ text: summary.lastUpdated ? `Last save: ${new Date(summary.lastUpdated).toLocaleString('en-GB', { timeZone: config.botTimezone })}` : 'No save data yet' })
-          .setTimestamp();
-        await interaction.editReply({ embeds: [embed], files: [attachment] });
-      }
-    } catch (err) {
-      console.error('[PANEL CH] Map generation error:', err);
-      await interaction.editReply('❌ Failed to generate map image.');
-    }
     return true;
   }
 
@@ -3757,21 +3662,6 @@ class PanelChannel {
         .setStyle(ButtonStyle.Success);
       const serverMgmtRow = new ActionRowBuilder().addComponents(addServerBtn);
       rows.push(serverMgmtRow);
-    }
-
-    // Add map row when player map is enabled
-    if (config.enablePlayerMap) {
-      const mapRow = new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-          .setCustomId(BTN.MAP)
-          .setLabel('Player Map')
-          .setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder()
-          .setCustomId(BTN.HEATMAP)
-          .setLabel('Heatmap')
-          .setStyle(ButtonStyle.Secondary),
-      );
-      rows.push(mapRow);
     }
 
     return rows;

@@ -28,9 +28,11 @@ class PlayerStats {
 
   init() {
     if (this._data) return; // already initialised
-    this._load();
+    this._loadFromDb();      // try DB first
+    if (!this._data) this._load(); // fall back to JSON
     this._buildNameIndex();
     this._loadLocalIdMap(); // seed name→SteamID from cached PlayerIDMapped.txt
+    this._migrateJsonToDb(); // one-time: push any JSON-only data into DB
     this._saveTimer = setInterval(() => this._autoSave(), SAVE_INTERVAL);
     const count = Object.keys(this._data.players).length;
     console.log(`[${this._label}] Loaded ${count} player(s) from database`);
@@ -96,6 +98,140 @@ class PlayerStats {
     }
   }
 
+  // ─── DB-first helpers ────────────────────────────────────
+
+  /** Load player log stats from DB into the in-memory cache. */
+  _loadFromDb() {
+    if (!this._db) return;
+    try {
+      const rows = this._db.getAllPlayerLogStats();
+      if (!rows || rows.length === 0) return; // DB empty — fall through to JSON
+      this._data = { players: {} };
+      for (const row of rows) {
+        const damageTaken = this._parseJson(row.log_damage_detail, {});
+        const damageTakenTotal = Object.values(damageTaken).reduce((a, b) => a + b, 0);
+        // Sanity check: if DB has aggregate but no detail, use aggregate
+        const dtTotal = damageTakenTotal || (row.log_damage_taken || 0);
+        this._data.players[row.steam_id] = {
+          name: row.name || row.steam_id,
+          nameHistory: [],
+          deaths: row.log_deaths || 0,
+          builds: row.log_builds || 0,
+          buildItems: this._parseJson(row.log_build_items, {}),
+          raidsOut: row.log_raids_out || 0,
+          raidsIn: row.log_raids_in || 0,
+          destroyedOut: row.log_destroyed_out || 0,
+          destroyedIn: row.log_destroyed_in || 0,
+          containersLooted: row.log_loots || 0,
+          damageTaken,
+          killedBy: this._parseJson(row.log_killed_by, {}),
+          pvpKills: row.log_pvp_kills || 0,
+          pvpDeaths: row.log_pvp_deaths || 0,
+          connects: row.log_connects || 0,
+          disconnects: row.log_disconnects || 0,
+          adminAccess: row.log_admin_access || 0,
+          cheatFlags: this._parseJson(row.log_cheat_flags, []),
+          lastEvent: row.log_last_event || null,
+        };
+        // Keep dtTotal consistent (unused but guard against old aggregate-only data)
+        void dtTotal;
+      }
+      console.log(`[${this._label}] Loaded ${rows.length} player(s) from database`);
+    } catch (err) {
+      console.warn(`[${this._label}] DB load failed, falling back to JSON:`, err.message);
+      this._data = null; // ensure fallback triggers
+    }
+  }
+
+  /** One-time migration: push JSON stats into the DB if not already there. */
+  _migrateJsonToDb() {
+    if (!this._db || !this._data) return;
+    try {
+      const dbRows = this._db.getAllPlayerLogStats();
+      const dbIds = new Set(dbRows.map(r => r.steam_id));
+      let migrated = 0;
+      for (const [id, record] of Object.entries(this._data.players)) {
+        if (!id || id.startsWith('name:') || !/^\d{17}$/.test(id)) continue;
+        if (dbIds.has(id)) continue; // already in DB
+        this._db.upsertFullLogStats(id, {
+          name: record.name || '',
+          deaths: record.deaths,
+          pvpKills: record.pvpKills,
+          pvpDeaths: record.pvpDeaths,
+          builds: record.builds,
+          containersLooted: record.containersLooted,
+          damageTakenTotal: Object.values(record.damageTaken || {}).reduce((a, b) => a + b, 0),
+          raidsOut: record.raidsOut,
+          raidsIn: record.raidsIn,
+          connects: record.connects,
+          disconnects: record.disconnects,
+          adminAccess: record.adminAccess,
+          destroyedOut: record.destroyedOut,
+          destroyedIn: record.destroyedIn,
+          buildItems: record.buildItems,
+          killedBy: record.killedBy,
+          damageTaken: record.damageTaken,
+          cheatFlags: record.cheatFlags,
+          lastEvent: record.lastEvent,
+        });
+        migrated++;
+      }
+      if (migrated > 0) {
+        console.log(`[${this._label}] Migrated ${migrated} player(s) from JSON to DB`);
+      }
+    } catch (err) {
+      console.warn(`[${this._label}] JSON→DB migration failed (non-critical):`, err.message);
+    }
+  }
+
+  /** Find the key (steamId or name:X) for a given record in _data.players. */
+  _getKeyForRecord(record) {
+    for (const [key, rec] of Object.entries(this._data.players)) {
+      if (rec === record) return key;
+    }
+    return null;
+  }
+
+  /** Persist a single player record to the DB (called after every mutation). */
+  _persistRecord(key, record) {
+    if (!this._db || !key || key.startsWith('name:') || !/^\d{17}$/.test(key)) return;
+    try {
+      this._db.upsertFullLogStats(key, {
+        name: record.name || '',
+        deaths: record.deaths || 0,
+        pvpKills: record.pvpKills || 0,
+        pvpDeaths: record.pvpDeaths || 0,
+        builds: record.builds || 0,
+        containersLooted: record.containersLooted || 0,
+        damageTakenTotal: Object.values(record.damageTaken || {}).reduce((a, b) => a + b, 0),
+        raidsOut: record.raidsOut || 0,
+        raidsIn: record.raidsIn || 0,
+        connects: record.connects || 0,
+        disconnects: record.disconnects || 0,
+        adminAccess: record.adminAccess || 0,
+        destroyedOut: record.destroyedOut || 0,
+        destroyedIn: record.destroyedIn || 0,
+        buildItems: record.buildItems || {},
+        killedBy: record.killedBy || {},
+        damageTaken: record.damageTaken || {},
+        cheatFlags: record.cheatFlags || [],
+        lastEvent: record.lastEvent || null,
+      });
+    } catch (err) {
+      // Non-critical: in-memory cache is still correct
+      if (!this._persistWarnLogged) {
+        console.warn(`[${this._label}] DB persist failed (will suppress further):`, err.message);
+        this._persistWarnLogged = true;
+      }
+    }
+  }
+
+  /** Parse a JSON string safely, returning fallback on failure. */
+  _parseJson(str, fallback) {
+    if (!str) return fallback;
+    try { return JSON.parse(str); } catch { return fallback; }
+  }
+
   // ─── Recording methods (called by LogWatcher) ────────────
 
   recordDeath(playerName, timestamp, cause) {
@@ -108,6 +244,7 @@ class PlayerStats {
     }
     record.lastEvent = (timestamp || new Date()).toISOString();
     this._dirty = true;
+    this._persistRecord(this._getKeyForRecord(record), record);
   }
 
   recordPvpKill(killerName, victimName, timestamp) {
@@ -125,6 +262,8 @@ class PlayerStats {
     victim.lastEvent = ts;
 
     this._dirty = true;
+    this._persistRecord(this._getKeyForRecord(killer), killer);
+    this._persistRecord(this._getKeyForRecord(victim), victim);
   }
 
   recordBuild(playerName, steamId, itemName, timestamp) {
@@ -134,6 +273,7 @@ class PlayerStats {
     record.buildItems[itemName] = (record.buildItems[itemName] || 0) + 1;
     record.lastEvent = (timestamp || new Date()).toISOString();
     this._dirty = true;
+    this._persistRecord(steamId, record);
   }
 
   recordRaid(attackerName, attackerSteamId, ownerSteamId, destroyed, timestamp) {
@@ -145,6 +285,7 @@ class PlayerStats {
       attacker.raidsOut++;
       if (destroyed) attacker.destroyedOut++;
       attacker.lastEvent = ts;
+      this._persistRecord(attackerSteamId, attacker);
     }
     // Owner/victim stats
     const owner = this._getById(ownerSteamId);
@@ -152,6 +293,7 @@ class PlayerStats {
       owner.raidsIn++;
       if (destroyed) owner.destroyedIn++;
       owner.lastEvent = ts;
+      this._persistRecord(ownerSteamId, owner);
     }
     this._dirty = true;
   }
@@ -164,6 +306,7 @@ class PlayerStats {
     record.containersLooted++;
     record.lastEvent = (timestamp || new Date()).toISOString();
     this._dirty = true;
+    this._persistRecord(steamId, record);
   }
 
   recordDamageTaken(playerName, source, timestamp) {
@@ -173,6 +316,7 @@ class PlayerStats {
     record.damageTaken[cleanSource] = (record.damageTaken[cleanSource] || 0) + 1;
     record.lastEvent = (timestamp || new Date()).toISOString();
     this._dirty = true;
+    this._persistRecord(this._getKeyForRecord(record), record);
   }
 
   recordConnect(playerName, steamId, timestamp) {
@@ -181,6 +325,7 @@ class PlayerStats {
     record.connects++;
     record.lastEvent = (timestamp || new Date()).toISOString();
     this._dirty = true;
+    this._persistRecord(steamId, record);
   }
 
   recordDisconnect(playerName, steamId, timestamp) {
@@ -189,6 +334,7 @@ class PlayerStats {
     record.disconnects++;
     record.lastEvent = (timestamp || new Date()).toISOString();
     this._dirty = true;
+    this._persistRecord(steamId, record);
   }
 
   recordAdminAccess(playerName, timestamp) {
@@ -197,6 +343,7 @@ class PlayerStats {
     record.adminAccess++;
     record.lastEvent = (timestamp || new Date()).toISOString();
     this._dirty = true;
+    this._persistRecord(this._getKeyForRecord(record), record);
   }
 
   recordCheatFlag(playerName, steamId, type, timestamp) {
@@ -208,6 +355,7 @@ class PlayerStats {
     });
     record.lastEvent = (timestamp || new Date()).toISOString();
     this._dirty = true;
+    this._persistRecord(steamId, record);
   }
 
   // ─── Query methods ───────────────────────────────────────
@@ -611,15 +759,25 @@ class PlayerStats {
       for (const [id, record] of Object.entries(this._data.players)) {
         // Skip orphaned name: records (no real steam ID)
         if (!id || id.startsWith('name:') || !/^\d{17}$/.test(id)) continue;
-        this._db.updatePlayerLogStats(id, {
+        this._db.upsertFullLogStats(id, {
+          name: record.name || '',
           deaths: record.deaths || 0,
           pvpKills: record.pvpKills || 0,
           pvpDeaths: record.pvpDeaths || 0,
           builds: record.builds || 0,
-          loots: record.containersLooted || 0,
-          damageTaken: Object.values(record.damageTaken || {}).reduce((a, b) => a + b, 0),
+          containersLooted: record.containersLooted || 0,
+          damageTakenTotal: Object.values(record.damageTaken || {}).reduce((a, b) => a + b, 0),
           raidsOut: record.raidsOut || 0,
           raidsIn: record.raidsIn || 0,
+          connects: record.connects || 0,
+          disconnects: record.disconnects || 0,
+          adminAccess: record.adminAccess || 0,
+          destroyedOut: record.destroyedOut || 0,
+          destroyedIn: record.destroyedIn || 0,
+          buildItems: record.buildItems || {},
+          killedBy: record.killedBy || {},
+          damageTaken: record.damageTaken || {},
+          cheatFlags: record.cheatFlags || [],
           lastEvent: record.lastEvent || null,
         });
       }

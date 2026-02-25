@@ -235,6 +235,25 @@ class LogWatcher {
     return null;
   }
 
+  /**
+   * Check if a damage source looks like an NPC/AI entity rather than a player.
+   * All game NPC sources normally have a BP_ prefix (filtered before this).
+   * This is a secondary safety net for edge cases.
+   *
+   * We check for:
+   *   1. Names containing underscores (UE4 blueprint convention, players can't have underscores)
+   *   2. Known NPC type keywords as exact match only (case-insensitive)
+   */
+  _isNpcDamageSource(source) {
+    // UE4 blueprint-style names always have underscores — player names don't
+    if (source.includes('_')) return true;
+    // Exact-match check for bare NPC type names (without BP_ prefix).
+    // In practice, ALL NPC damage is logged with BP_ prefix, so this only
+    // catches hypothetical edge cases. We use exact match to avoid false
+    // positives on player names like "SnakeEyes", "GrizzlyBear", etc.
+    return /^(?:Zombie|ZombieBear|KaiHuman|Mutant|Runner|Brute|RunnerBrute|Pudge|Dogzombie|BellyToxic|Police|Cop|Military|MilitaryArmoured|Hazmat|Camo|Wolf|Bear|Deer|Snake|Spider)$/i.test(source);
+  }
+
   _prunePvpTracker() {
     const now = Date.now();
     for (const [key, entry] of this._pvpDamageTracker) {
@@ -939,8 +958,13 @@ class LogWatcher {
         // DB: log damage event
         this._logEvent({ type: 'damage_taken', category: 'combat', actorName: dmgVictim, item: dmgSource, amount: Math.round(dmgAmount), timestamp });
 
-        // Track PvP damage for kill attribution (source is a player name if no BP_ prefix)
-        if (this._config.enablePvpKillFeed && !dmgSource.startsWith('BP_') && !(/Zombie|Wolf|Bear|Deer|Snake|Spider|Human|KaiHuman|Mutant|Runner|Brute|Pudge|Dogzombie|Police|Cop|Military|Hazmat|Camo/i.test(dmgSource))) {
+        // Track PvP damage for kill attribution.
+        // NPC damage sources always start with BP_ (e.g. BP_Zombie_C_123) — already
+        // excluded above.  The secondary regex is a safety net that catches any edge
+        // cases where the game might log an NPC name without the BP_ prefix.  We use
+        // start-of-string anchors (^) and underscores to avoid false positives on
+        // player names that happen to contain words like "Human" or "Bear".
+        if (this._config.enablePvpKillFeed && !dmgSource.startsWith('BP_') && !this._isNpcDamageSource(dmgSource)) {
           this._recordPvpDamage(dmgVictim, dmgSource, dmgAmount, timestamp);
         }
       }

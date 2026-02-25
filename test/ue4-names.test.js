@@ -133,13 +133,15 @@ describe('cleanItemName', () => {
   });
 
   it('handles CamelCase items', () => {
-    assert.equal(cleanItemName('WaterPurifyPills'), 'Water Purify Pills');
+    // ITEM_NAMES provides authoritative game name
+    assert.equal(cleanItemName('WaterPurifyPills'), 'Purification Tablets');
   });
 
   it('handles full paths', () => {
+    // ITEM_NAMES: Bandage → Rag (actual game name)
     assert.equal(
       cleanItemName('/Game/Items/BP_Bandage.BP_Bandage_C'),
-      'Bandage'
+      'Rag'
     );
   });
 
@@ -165,8 +167,9 @@ describe('cleanItemName', () => {
   });
 
   it('cleans attachment names', () => {
-    assert.equal(cleanItemName('Att_Mag_Extended'), 'Extended Magazine');
-    assert.equal(cleanItemName('Att_Mag_Extended_Uzi'), 'Extended Mag (Uzi)');
+    // ITEM_NAMES provides authoritative game names for attachments
+    assert.equal(cleanItemName('Att_Mag_Extended'), 'Pistol Extended Mag');
+    assert.equal(cleanItemName('Att_Mag_Extended_Uzi'), 'Uzi Extended Mag');
   });
 
   it('strips trailing digit duplicates', () => {
@@ -179,9 +182,9 @@ describe('cleanItemName', () => {
 
   it('preserves already clean names', () => {
     assert.equal(cleanItemName('Revolver'), 'Revolver');
-    assert.equal(cleanItemName('Bandage'), 'Bandage');
-    assert.equal(cleanItemName('Water'), 'Water');
-    assert.equal(cleanItemName('Fiber'), 'Fiber');
+    assert.equal(cleanItemName('Bandage'), 'Rag');  // ITEM_NAMES: Bandage → Rag
+    assert.equal(cleanItemName('Water'), 'Water Bottle');  // ITEM_NAMES: Water → Water Bottle
+    assert.equal(cleanItemName('Fiber'), 'Fibers');  // ITEM_NAMES: Fiber → Fibers
     assert.equal(cleanItemName('Rope'), 'Rope');
   });
 
@@ -250,8 +253,8 @@ describe('cleanItemArray', () => {
     ];
     const result = cleanItemArray(input);
     assert.deepEqual(result, [
-      'Bandage',
-      'Water',
+      'Rag',  // ITEM_NAMES: Bandage → Rag
+      'Water Bottle',  // ITEM_NAMES: Water → Water Bottle
       'Stone Knife',
       'Improvised Axe',
     ]);
@@ -264,7 +267,7 @@ describe('cleanItemArray', () => {
     ];
     const result = cleanItemArray(input);
     assert.equal(result.length, 1);
-    assert.equal(result[0].item, 'Bandage');
+    assert.equal(result[0].item, 'Rag');  // ITEM_NAMES: Bandage → Rag
     assert.equal(result[0].amount, 3);
   });
 });

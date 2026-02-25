@@ -25,8 +25,13 @@ const SftpClient = require('ssh2-sftp-client');
 const _defaultConfig = require('./config');
 const _defaultRcon = require('./rcon');
 const { getDayOffset, getRotatedProfileIndex, getTodaySchedule } = require('./schedule-utils');
+const { buildWelcomeContent } = require('./auto-messages');
 
 const WARNINGS = [10, 5, 3, 2, 1]; // countdown warnings in minutes
+
+// Profile name → RCON color tag for in-game messages
+const PROFILE_COLORS = { calm: 'PR', surge: 'SP', horde: 'PN' };
+function profileTag(name) { return PROFILE_COLORS[name] || 'FO'; }
 
 class ServerScheduler {
   constructor(client, logWatcher, deps = {}) {
@@ -223,14 +228,20 @@ class ServerScheduler {
       const waitMs = (minutesLeft - nextMinutes) * 60_000;
 
       // Build warning message
-      let msg = `⏰ Server restart in ${minutesLeft} minute${minutesLeft > 1 ? 's' : ''}`;
+      let msg = `Server restart in ${minutesLeft} minute${minutesLeft > 1 ? 's' : ''}`;
+      let rconMsg = `</><FO>${msg}`;
       if (hasSettings && minutesLeft === warnings[0]) {
-        // First warning — mention the profile change
-        msg += ` — switching to ${this._getProfileDisplayName(profileName)}`;
+        const display = this._getProfileDisplayName(profileName);
+        msg += ` \u2014 switching to ${display}`;
+        const tag = profileTag(profileName);
+        const { name: pName, desc: pDesc } = this._getProfileParts(profileName);
+        rconMsg = `</><FO>Server restart in ${minutesLeft} minute${minutesLeft > 1 ? 's' : ''} \u2014 switching to </><${tag}>${pName}</><FO>${pDesc}<FO>`;
+      } else {
+        rconMsg += '<FO>';
       }
 
       this._announce(msg, 0xf39c12);
-      this._rcon.send(`admin ${msg}`).catch(err => {
+      this._rcon.send(`admin ${rconMsg}`).catch(err => {
         console.error(`[${this._label}] Failed to send in-game warning:`, err.message);
       });
 
@@ -277,6 +288,17 @@ class ServerScheduler {
     }
 
     return name.charAt(0).toUpperCase() + name.slice(1);
+  }
+
+  /** Get profile name and description as separate strings for colored RCON output. */
+  _getProfileParts(name) {
+    const capName = name.charAt(0).toUpperCase() + name.slice(1);
+    const full = this._getProfileDisplayName(name);
+    const parenIdx = full.indexOf(' (');
+    if (parenIdx >= 0) {
+      return { name: capName, desc: full.slice(parenIdx) };
+    }
+    return { name: capName, desc: '' };
   }
 
   async _executeRestart(profileName, profileIndex, profileSettings) {
@@ -334,41 +356,66 @@ class ServerScheduler {
 
     // Announce restart
     const displayName = this._getProfileDisplayName(profileName);
-    const msg = `🔄 Server restarting — ${displayName}`;
+    const msg = `Server restarting \u2014 ${displayName}`;
+    const tag = profileTag(profileName);
+    const { name: pName, desc: pDesc } = this._getProfileParts(profileName);
+    const rconMsg = `</><FO>Server restarting \u2014 </><${tag}>${pName}</><FO>${pDesc}<FO>`;
     this._announce(msg, 0x3498db);
-    await this._rcon.send(`admin ${msg}`).catch(() => {});
+    await this._rcon.send(`admin ${rconMsg}`).catch(() => {});
+
+    // Write WelcomeMessage.txt before restart so the game reads fresh content on boot
+    if (this._config.enableWelcomeFile && this._config.ftpHost) {
+      const wsftp = new SftpClient();
+      try {
+        await wsftp.connect(this._config.sftpConnectConfig());
+        const content = await buildWelcomeContent({ config: this._config });
+        await wsftp.put(Buffer.from(content, 'utf8'), this._config.ftpWelcomePath);
+        console.log(`[${this._label}] Updated WelcomeMessage.txt before restart`);
+      } catch (err) {
+        console.error(`[${this._label}] Failed to write WelcomeMessage.txt:`, err.message);
+      } finally {
+        await wsftp.end().catch(() => {});
+      }
+    }
 
     // Post to activity thread
     await this._postToActivityLog(profileName, profileSettings);
 
     // Execute restart
     let restartSucceeded = false;
+    const container = process.env.DOCKER_CONTAINER;
 
-    // Try RCON restart first
-    try {
-      await this._rcon.send('RestartNow');
-      console.log(`[${this._label}] Restart command sent via RCON`);
-      restartSucceeded = true;
-    } catch (err) {
-      console.warn(`[${this._label}] RCON RestartNow failed:`, err.message);
-      // Try QuickRestart
+    // Prefer Docker restart when configured — RCON RestartNow doesn't reliably
+    // reinitialise RCON inside a container, leaving the bot unable to reconnect.
+    if (container) {
       try {
-        await this._rcon.send('QuickRestart');
-        restartSucceeded = true;
-      } catch {
-        // Try Docker restart as last resort
-        try {
-          const { exec } = require('child_process');
-          const container = process.env.DOCKER_CONTAINER || 'hzserver';
-          await new Promise((resolve, reject) => {
-            exec(`docker restart ${container}`, { timeout: 60000 }, (err) => {
-              if (err) reject(err); else resolve();
-            });
+        const { exec } = require('child_process');
+        await new Promise((resolve, reject) => {
+          exec(`docker restart ${container}`, { timeout: 120000 }, (err) => {
+            if (err) reject(err); else resolve();
           });
-          console.log(`[${this._label}] Restart via Docker CLI`);
+        });
+        console.log(`[${this._label}] Restart via Docker CLI (${container})`);
+        restartSucceeded = true;
+      } catch (dockerErr) {
+        console.warn(`[${this._label}] Docker restart failed:`, dockerErr.message);
+      }
+    }
+
+    // Fallback: RCON restart (non-Docker setups, or if Docker failed)
+    if (!restartSucceeded) {
+      try {
+        await this._rcon.send('RestartNow');
+        console.log(`[${this._label}] Restart command sent via RCON`);
+        restartSucceeded = true;
+      } catch (err) {
+        console.warn(`[${this._label}] RCON RestartNow failed:`, err.message);
+        try {
+          await this._rcon.send('QuickRestart');
+          console.log(`[${this._label}] Restart via RCON QuickRestart`);
           restartSucceeded = true;
-        } catch (dockerErr) {
-          console.error(`[${this._label}] All restart methods failed:`, dockerErr.message);
+        } catch {
+          console.error(`[${this._label}] All restart methods failed`);
         }
       }
     }
@@ -376,6 +423,13 @@ class ServerScheduler {
     if (restartSucceeded) {
       this._currentProfileIndex = profileIndex;
       this._currentProfileName = profileName;
+
+      // Post-restart RCON health check — if RCON doesn't reconnect within 90s,
+      // the game server likely failed to bind the RCON port (race condition).
+      // Trigger a second Docker restart to recover.
+      if (container) {
+        this._scheduleRconHealthCheck(container);
+      }
     }
 
     this._transitioning = false;
@@ -400,6 +454,44 @@ class ServerScheduler {
         await this._adminChannel.send({ embeds: [embed] });
       } catch { /* ignore */ }
     }
+  }
+
+  /**
+   * After a Docker restart, poll RCON connectivity for up to 90s.
+   * If RCON doesn't come back, the game server likely failed to bind the port
+   * (race condition with TIME_WAIT). Trigger a second Docker restart to recover.
+   */
+  _scheduleRconHealthCheck(container) {
+    const checkInterval = 10_000; // check every 10s
+    const maxWait = 90_000;       // give up after 90s
+    const start = Date.now();
+    console.log(`[${this._label}] RCON health check started — will verify within ${maxWait / 1000}s`);
+
+    const timer = setInterval(async () => {
+      // RCON reconnected successfully
+      if (this._rcon.connected && this._rcon.authenticated) {
+        clearInterval(timer);
+        console.log(`[${this._label}] RCON health check passed — connected`);
+        return;
+      }
+
+      // Timed out — RCON never came back
+      if (Date.now() - start >= maxWait) {
+        clearInterval(timer);
+        console.warn(`[${this._label}] RCON health check FAILED — no connection after ${maxWait / 1000}s, restarting container again`);
+        try {
+          const { exec } = require('child_process');
+          await new Promise((resolve, reject) => {
+            exec(`docker restart ${container}`, { timeout: 120000 }, (err) => {
+              if (err) reject(err); else resolve();
+            });
+          });
+          console.log(`[${this._label}] Recovery restart sent (${container})`);
+        } catch (err) {
+          console.error(`[${this._label}] Recovery restart failed:`, err.message);
+        }
+      }
+    }, checkInterval);
   }
 
   async _postToActivityLog(profileName, profileSettings) {
@@ -458,6 +550,14 @@ class ServerScheduler {
     const timeStrs = this._restartTimes.map(fmt);
     const todaySchedule = getTodaySchedule(timeStrs, this._profiles, dayOffset);
 
+    // Build per-profile settings map for external consumers (web panel hover)
+    const profileSettings = {};
+    for (const name of this._profiles) {
+      if (this._profileSettings[name]) {
+        profileSettings[name] = { ...this._profileSettings[name] };
+      }
+    }
+
     return {
       active: this._restartTimes.length > 0,
       currentProfile: this._currentProfileName,
@@ -467,9 +567,11 @@ class ServerScheduler {
       minutesUntilRestart: minutesUntilNext === Infinity ? null : minutesUntilNext,
       restartTimes: timeStrs,
       profiles: this._profiles,
+      profileSettings,
       todaySchedule,
       rotateDaily: this._config.restartRotateDaily,
       transitioning: this._transitioning,
+      timezone: this._config.botTimezone || 'UTC',
     };
   }
 }

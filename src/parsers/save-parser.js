@@ -191,6 +191,7 @@ function createPlayerData() {
     unlockedProfessions: [],
     unlockedSkills: [],
     skillsData: [],
+    skillTree: [],
 
     // Inventory
     inventory: [],
@@ -359,6 +360,39 @@ function parseSave(buf) {
       if (n === 'ExtendedStats' && currentSteamID) {
         _extractExtendedStats(prop.value, ensurePlayer(currentSteamID));
       }
+
+      // ── Skill tree (inside Exp → TreeData → Tree) ──
+      // Tree is an array of 21 skill-category slots, each with Type, Index,
+      // Locked?, Exp, ExpNeeded, UnlockedSkills[], UnlockProgress[].
+      // We capture the full tree and aggregate all unlocked skills here, then
+      // return to prevent the generic recursion from overwriting p.exp and
+      // p.unlockedSkills with per-slot values.
+      if (n === 'Tree' && currentSteamID) {
+        const p = ensurePlayer(currentSteamID);
+        const allSkills = [];
+        p.skillTree = prop.value.map(elemProps => {
+          if (!Array.isArray(elemProps)) return null;
+          const node = {};
+          for (const ep of elemProps) {
+            if (ep.name === 'Type') node.type = ep.value;
+            else if (ep.name === 'Index') node.index = ep.value;
+            else if (ep.name === 'Locked?') node.locked = ep.value;
+            else if (ep.name === 'NeedSpecialUnlock?') node.needSpecialUnlock = ep.value;
+            else if (ep.name === 'Exp') node.exp = ep.value;
+            else if (ep.name === 'ExpNeeded') node.expNeeded = ep.value;
+            else if (ep.name === 'UnlockedSkills' && Array.isArray(ep.value)) {
+              node.unlockedSkills = ep.value.filter(Boolean);
+              for (const s of node.unlockedSkills) allSkills.push(s);
+            }
+            else if (ep.name === 'UnlockProgress' && Array.isArray(ep.value)) node.unlockProgress = ep.value;
+          }
+          return node;
+        }).filter(Boolean);
+        // Aggregate all unlocked skills across all tree slots
+        if (allSkills.length) p.unlockedSkills = allSkills;
+        return;
+      }
+
       for (const elemProps of prop.value) {
         if (Array.isArray(elemProps)) {
           prescanSteamId(elemProps);
@@ -975,6 +1009,14 @@ function parseSave(buf) {
     }
     if (n === 'UDSandUDWsave') {
       worldState.weatherState = prop.children || prop.value;
+      // Promote key time/weather values from the raw array
+      const ws = worldState.weatherState;
+      if (Array.isArray(ws)) {
+        for (const c of ws) {
+          if (c.name === 'TotalDaysElapsed' && typeof c.value === 'number') worldState.totalDaysElapsed = c.value;
+          if (c.name === 'TimeofDay' && typeof c.value === 'number') worldState.timeOfDay = Math.round(c.value * 100) / 100;
+        }
+      }
       return;
     }
 
@@ -1328,6 +1370,17 @@ function parseSave(buf) {
     }
   }
 
+  // Compute current season if not explicitly set
+  if (!worldState.currentSeason && worldState.gameDifficulty) {
+    const SEASONS = ['Spring', 'Summer', 'Fall', 'Winter'];
+    const startIdx = SEASONS.indexOf(worldState.gameDifficulty.startingSeason);
+    if (startIdx !== -1 && worldState.daysPassed != null) {
+      const dps = worldState.gameDifficulty.daysPerSeason || 28;
+      const seasonsPassed = Math.floor(worldState.daysPassed / dps);
+      worldState.currentSeason = SEASONS[(startIdx + seasonsPassed) % 4];
+    }
+  }
+
   // World summary stats
   worldState.totalStructures = structures.length;
   worldState.totalVehicles = vehicles.length;
@@ -1560,8 +1613,9 @@ function _childrenToObject(children) {
 
 // ─── Rounding helpers ──────────────────────────────────────────────────────
 
-function _round(v) { return Math.round(v * 10) / 10; }
-function _round2(v) { return Math.round(v * 100) / 100; }
+// Preserve full float precision from save data — round only at display time
+function _round(v) { return v; }
+function _round2(v) { return v; }
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  Clan data parser (separate Save_ClanData.sav file)

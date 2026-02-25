@@ -32,6 +32,7 @@ const fs = require('fs');
 const path = require('path');
 const { parseSave, parseClanData } = require('./save-parser');
 const { diffSaveState } = require('../db/diff-engine');
+const { reconcileItems } = require('../db/item-tracker');
 
 class SaveService extends EventEmitter {
   /**
@@ -709,7 +710,27 @@ class SaveService extends EventEmitter {
       horses: cache.horses || [],
     };
 
-    await this._syncParsedData(parsed, []);
+    // Agent cache doesn't include clan data — fetch it separately via SFTP
+    let clans = [];
+    if (this._clanSavePath && this._sftpConfig) {
+      let SFTPClient;
+      try { SFTPClient = require('ssh2-sftp-client'); } catch { /* ignore */ }
+      if (SFTPClient) {
+        const sftp = new SFTPClient();
+        try {
+          await sftp.connect(this._sftpConfig);
+          const clanStat = await sftp.stat(this._clanSavePath);
+          if (!this._lastClanMtime || clanStat.modifyTime !== this._lastClanMtime) {
+            const clanBuf = await sftp.get(this._clanSavePath);
+            this._lastClanMtime = clanStat.modifyTime;
+            clans = parseClanData(clanBuf);
+          }
+        } catch { /* Clan file may not exist */ }
+        finally { try { await sftp.end(); } catch { /* ignore */ } }
+      }
+    }
+
+    await this._syncParsedData(parsed, clans);
   }
 
   /**
@@ -789,6 +810,80 @@ class SaveService extends EventEmitter {
       this._db.replaceWorldHorses(parsed.horses);
     }
 
+    // Sync world drops (LODPickups, dropped backpacks, global containers)
+    try {
+      const worldDrops = [];
+      const ws = parsed.worldState || {};
+
+      // LOD Pickups — items on the ground
+      if (ws.lodPickups) {
+        for (const p of ws.lodPickups) {
+          worldDrops.push({
+            type: 'pickup', actorName: '', item: p.item, amount: p.amount || 1,
+            durability: p.durability || 0, items: [],
+            worldLoot: p.worldLoot, placed: p.placed, spawned: p.spawned,
+            x: p.x, y: p.y, z: p.z,
+          });
+        }
+      }
+
+      // Dropped backpacks
+      if (ws.droppedBackpacks) {
+        for (let i = 0; i < ws.droppedBackpacks.length; i++) {
+          const bp = ws.droppedBackpacks[i];
+          worldDrops.push({
+            type: 'backpack', actorName: `backpack_${i}`, item: '',
+            amount: 0, durability: 0, items: bp.items || [],
+            x: bp.x, y: bp.y, z: bp.z,
+          });
+        }
+      }
+
+      // Global containers (houses, stores, etc.)
+      if (ws.globalContainers) {
+        for (const gc of ws.globalContainers) {
+          worldDrops.push({
+            type: 'global_container', actorName: gc.actorName || '', item: '',
+            amount: 0, durability: 0, items: gc.items || [],
+            locked: gc.locked, doesSpawnLoot: gc.doesSpawnLoot,
+            x: gc.x ?? null, y: gc.y ?? null, z: gc.z ?? null,
+          });
+        }
+      }
+
+      if (worldDrops.length > 0) {
+        this._db.replaceWorldDrops(worldDrops);
+      }
+    } catch (err) {
+      console.warn(`[${this._label}] World drops sync error (non-fatal):`, err.message);
+    }
+
+    // ── Item instance tracking (fingerprint reconciliation) ──
+    let itemStats = null;
+    try {
+      const nameResolver = (steamId) => {
+        const p = parsed.players.get(steamId);
+        return p?.name || this._idMap[steamId] || steamId;
+      };
+      itemStats = reconcileItems(this._db, {
+        players: parsed.players,
+        containers: parsed.containers || [],
+        vehicles: parsed.vehicles || [],
+        horses: parsed.horses || [],
+        structures: parsed.structures || [],
+        worldState: parsed.worldState || {},
+      }, nameResolver);
+
+      // Periodic cleanup of old lost items
+      if (this._syncCount % 100 === 0) {
+        this._db.purgeOldLostItems('-7 days');
+        this._db.purgeOldLostGroups('-7 days');
+        this._db.purgeOldMovements('-30 days');
+      }
+    } catch (err) {
+      console.warn(`[${this._label}] Item tracker error (non-fatal):`, err.message);
+    }
+
     // ── Write activity log entries from diff ──
     if (diffEvents.length > 0) {
       try {
@@ -811,7 +906,8 @@ class SaveService extends EventEmitter {
     const horsesLabel = parsed.horses?.length ? `, ${parsed.horses.length} horses` : '';
     const containersLabel = parsed.containers?.length ? `, ${parsed.containers.length} containers` : '';
     const activityLabel = diffEvents.length ? `, ${diffEvents.length} activity events` : '';
-    console.log(`[${this._label}] Sync complete (${mode}): ${parsed.players.size} players, ${parsed.structures.length} structures, ${parsed.vehicles.length} vehicles, ${clans.length} clans${horsesLabel}${containersLabel}${activityLabel} (${elapsed}ms)`);
+    const itemLabel = itemStats ? `, items: ${itemStats.matched}m/${itemStats.created}c/${itemStats.moved}v/${itemStats.lost}l` + (itemStats.groups ? ` grp: ${itemStats.groups.matched}m/${itemStats.groups.created}c/${itemStats.groups.adjusted}a/${itemStats.groups.transferred}t/${itemStats.groups.lost}l` : '') : '';
+    console.log(`[${this._label}] Sync complete (${mode}): ${parsed.players.size} players, ${parsed.structures.length} structures, ${parsed.vehicles.length} vehicles, ${clans.length} clans${horsesLabel}${containersLabel}${activityLabel}${itemLabel} (${elapsed}ms)`);
 
     // Emit event with summary so other modules can react
     const result = {
@@ -823,6 +919,7 @@ class SaveService extends EventEmitter {
       horseCount: parsed.horses?.length || 0,
       containerCount: parsed.containers?.length || 0,
       activityEvents: diffEvents.length,
+      itemTracking: itemStats,
       worldState: parsed.worldState,
       elapsed,
       steamIds: [...parsed.players.keys()],

@@ -1,5 +1,4 @@
 const _defaultRcon = require('./rcon');
-const { stripColorTags } = require('./rcon-colors');
 
 const COMMANDS = {
   INFO: 'info',
@@ -34,11 +33,9 @@ async function getPlayerList(rcon) {
 
 async function sendAdminMessage(message, rcon) {
   const r = rcon || _defaultRcon;
-  // RCON admin command does NOT render color tags — strip them.
-  // Color tags only work in WelcomeMessage.txt (rendered by the game client).
-  // [Bot] prefix identifies bot broadcasts so ChatRelay can skip them.
-  const clean = stripColorTags(message);
-  return r.send(`${COMMANDS.ADMIN_MSG} [Bot] ${clean}`);
+  // Lead with </> to close default yellow so color tags in message work.
+  // Message should start with a color open tag (e.g. <FO>) not </><FO>.
+  return r.send(`${COMMANDS.ADMIN_MSG} </>${message}`);
 }
 
 // ── Parsers ─────────────────────────────────────────────────────────────

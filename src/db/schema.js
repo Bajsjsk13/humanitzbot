@@ -9,7 +9,7 @@
  * Schema is applied via database.js on first run and auto-migrated on updates.
  */
 
-const SCHEMA_VERSION = 5;
+const SCHEMA_VERSION = 9;
 
 // ─── Player data ────────────────────────────────────────────────────────────
 
@@ -79,7 +79,11 @@ CREATE TABLE IF NOT EXISTS players (
   hypo_handle          REAL DEFAULT 0,
 
   -- Experience / progression
-  exp             REAL DEFAULT 0,
+  exp             REAL DEFAULT 0,              -- XPGained (lifetime cumulative — misleading at 2M)
+  level           INTEGER DEFAULT 0,           -- current player level
+  exp_current     REAL DEFAULT 0,              -- XP progress toward next level
+  exp_required    REAL DEFAULT 0,              -- XP needed for next level
+  skills_point    INTEGER DEFAULT 0,           -- available skill points
 
   -- Position
   pos_x           REAL,
@@ -177,10 +181,22 @@ CREATE TABLE IF NOT EXISTS players (
   log_raids_out   INTEGER DEFAULT 0,
   log_raids_in    INTEGER DEFAULT 0,
   log_last_event  TEXT,                        -- ISO timestamp
+  log_connects    INTEGER DEFAULT 0,
+  log_disconnects INTEGER DEFAULT 0,
+  log_admin_access INTEGER DEFAULT 0,
+  log_destroyed_out INTEGER DEFAULT 0,
+  log_destroyed_in INTEGER DEFAULT 0,
+  log_build_items TEXT DEFAULT '{}',           -- JSON: { itemName: count }
+  log_killed_by   TEXT DEFAULT '{}',           -- JSON: { cause: count }
+  log_damage_detail TEXT DEFAULT '{}',         -- JSON: { source: count }
+  log_cheat_flags TEXT DEFAULT '[]',           -- JSON: [{ type, timestamp }]
 
   -- Playtime (from PlaytimeTracker)
   playtime_seconds   INTEGER DEFAULT 0,
   session_count      INTEGER DEFAULT 0,
+  playtime_first_seen TEXT,                    -- ISO timestamp
+  playtime_last_login TEXT,                    -- ISO timestamp
+  playtime_last_seen  TEXT,                    -- ISO timestamp
 
   -- Metadata
   updated_at      TEXT DEFAULT (datetime('now'))
@@ -365,6 +381,131 @@ CREATE TABLE IF NOT EXISTS loot_actors (
 );
 `;
 
+// ─── Item groups (fungible item tracking) ───────────────────────────────────
+//
+// Fungible items (same fingerprint, e.g. identical Nails stacks) cannot be
+// individually distinguished. Instead, we track them as counted *groups*:
+// each unique (fingerprint, location_type, location_id, location_slot) tuple
+// is one group with a quantity. When quantity decreases at location A and
+// increases at location B → transfer event. When an item leaves a group,
+// it gets its own instance or joins/creates a group at the destination.
+
+const ITEM_GROUPS = `
+CREATE TABLE IF NOT EXISTS item_groups (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  fingerprint     TEXT NOT NULL,               -- item identity hash (shared by all members)
+  item            TEXT NOT NULL,               -- item name (RowName)
+  durability      REAL DEFAULT 0,
+  ammo            INTEGER DEFAULT 0,
+  attachments     TEXT DEFAULT '[]',
+  cap             REAL DEFAULT 0,
+  max_dur         REAL DEFAULT 0,
+  location_type   TEXT NOT NULL DEFAULT '',    -- 'player', 'container', 'vehicle', etc.
+  location_id     TEXT DEFAULT '',             -- steam_id, actor_name, etc.
+  location_slot   TEXT DEFAULT '',             -- 'inventory', 'equipment', etc.
+  pos_x           REAL,
+  pos_y           REAL,
+  pos_z           REAL,
+  quantity        INTEGER DEFAULT 1,           -- how many identical items are in this group
+  stack_size      INTEGER DEFAULT 1,           -- per-item stack size (amount field from save)
+  first_seen      TEXT DEFAULT (datetime('now')),
+  last_seen       TEXT DEFAULT (datetime('now')),
+  lost            INTEGER DEFAULT 0,           -- 1 = group disappeared from world
+  lost_at         TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_item_grp_fingerprint ON item_groups(fingerprint);
+CREATE INDEX IF NOT EXISTS idx_item_grp_item ON item_groups(item);
+CREATE INDEX IF NOT EXISTS idx_item_grp_location ON item_groups(location_type, location_id);
+CREATE INDEX IF NOT EXISTS idx_item_grp_active ON item_groups(lost);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_item_grp_unique ON item_groups(fingerprint, location_type, location_id, location_slot) WHERE lost = 0;
+`;
+
+// ─── Item instance tracking (fingerprint-based identity) ────────────────────
+
+const ITEM_INSTANCES = `
+CREATE TABLE IF NOT EXISTS item_instances (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  fingerprint     TEXT NOT NULL,               -- hash of item+durability+ammo+attachments for matching
+  item            TEXT NOT NULL,               -- item name (RowName)
+  durability      REAL DEFAULT 0,              -- durability value (key fingerprint component)
+  ammo            INTEGER DEFAULT 0,           -- loaded ammo count
+  attachments     TEXT DEFAULT '[]',           -- JSON array of attachment names
+  cap             REAL DEFAULT 0,              -- container capacity
+  max_dur         REAL DEFAULT 0,              -- max durability
+  location_type   TEXT NOT NULL DEFAULT '',    -- 'player', 'container', 'vehicle', 'horse', 'structure', 'world_drop', 'loot_actor', 'backpack', 'global_container'
+  location_id     TEXT DEFAULT '',             -- steam_id, actor_name, vehicle id, etc.
+  location_slot   TEXT DEFAULT '',             -- 'inventory', 'equipment', 'quick_slots', 'backpack', 'trunk', 'saddle'
+  pos_x           REAL,                        -- position (from parent entity)
+  pos_y           REAL,
+  pos_z           REAL,
+  amount          INTEGER DEFAULT 1,           -- stack size at this location
+  group_id        INTEGER DEFAULT NULL,        -- FK to item_groups (set for fungible items in a group)
+  first_seen      TEXT DEFAULT (datetime('now')),
+  last_seen       TEXT DEFAULT (datetime('now')),
+  lost            INTEGER DEFAULT 0,           -- 1 = not found in latest snapshot (despawned/consumed)
+  lost_at         TEXT                         -- when the item was last seen before disappearing
+);
+CREATE INDEX IF NOT EXISTS idx_item_inst_fingerprint ON item_instances(fingerprint);
+CREATE INDEX IF NOT EXISTS idx_item_inst_item ON item_instances(item);
+CREATE INDEX IF NOT EXISTS idx_item_inst_location ON item_instances(location_type, location_id);
+CREATE INDEX IF NOT EXISTS idx_item_inst_active ON item_instances(lost);
+CREATE INDEX IF NOT EXISTS idx_item_inst_group ON item_instances(group_id);
+`;
+
+const ITEM_MOVEMENTS = `
+CREATE TABLE IF NOT EXISTS item_movements (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  instance_id     INTEGER REFERENCES item_instances(id),   -- NULL for group-level movements
+  group_id        INTEGER REFERENCES item_groups(id),      -- set for group transfers
+  move_type       TEXT DEFAULT 'move',         -- 'move', 'group_split', 'group_merge', 'group_transfer', 'group_adjust'
+  item            TEXT NOT NULL,               -- denormalised for fast queries
+  from_type       TEXT DEFAULT '',             -- location_type before move
+  from_id         TEXT DEFAULT '',             -- location_id before move
+  from_slot       TEXT DEFAULT '',             -- slot before move
+  to_type         TEXT NOT NULL,               -- location_type after move
+  to_id           TEXT NOT NULL,               -- location_id after move
+  to_slot         TEXT DEFAULT '',             -- slot after move
+  amount          INTEGER DEFAULT 1,           -- how many items moved
+  attributed_steam_id TEXT DEFAULT '',         -- player who caused the move (if known)
+  attributed_name TEXT DEFAULT '',             -- player name
+  pos_x           REAL,                        -- position where the move occurred
+  pos_y           REAL,
+  pos_z           REAL,
+  created_at      TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_item_mov_instance ON item_movements(instance_id);
+CREATE INDEX IF NOT EXISTS idx_item_mov_group ON item_movements(group_id);
+CREATE INDEX IF NOT EXISTS idx_item_mov_item ON item_movements(item);
+CREATE INDEX IF NOT EXISTS idx_item_mov_created ON item_movements(created_at);
+CREATE INDEX IF NOT EXISTS idx_item_mov_attributed ON item_movements(attributed_steam_id);
+`;
+
+// ─── World drops (LODPickups, dropped backpacks, global containers) ─────────
+
+const WORLD_DROPS = `
+CREATE TABLE IF NOT EXISTS world_drops (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  type            TEXT NOT NULL,               -- 'pickup', 'backpack', 'global_container'
+  actor_name      TEXT DEFAULT '',             -- actor/entity identifier
+  item            TEXT DEFAULT '',             -- item name (for single-item pickups)
+  amount          INTEGER DEFAULT 0,
+  durability      REAL DEFAULT 0,
+  items           TEXT DEFAULT '[]',           -- JSON array (for backpacks/containers with multiple items)
+  world_loot      INTEGER DEFAULT 0,           -- 1 = natural world spawn
+  placed          INTEGER DEFAULT 0,           -- 1 = player-placed
+  spawned         INTEGER DEFAULT 0,           -- 1 = server-spawned
+  locked          INTEGER DEFAULT 0,
+  does_spawn_loot INTEGER DEFAULT 0,
+  pos_x           REAL,
+  pos_y           REAL,
+  pos_z           REAL,
+  updated_at      TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_world_drops_type ON world_drops(type);
+CREATE INDEX IF NOT EXISTS idx_world_drops_item ON world_drops(item);
+CREATE INDEX IF NOT EXISTS idx_world_drops_pos ON world_drops(pos_x, pos_y);
+`;
+
 // ─── Quests (world quest state) ─────────────────────────────────────────────
 
 const QUESTS = `
@@ -519,6 +660,19 @@ CREATE INDEX IF NOT EXISTS idx_snapshots_type_steam ON snapshots(type, steam_id)
 CREATE INDEX IF NOT EXISTS idx_snapshots_created ON snapshots(created_at);
 `;
 
+// ─── Server peaks (playtime tracker peak stats) ─────────────────────────────
+
+const SERVER_PEAKS = `
+CREATE TABLE IF NOT EXISTS server_peaks (
+  key         TEXT PRIMARY KEY,
+  value       TEXT DEFAULT '',
+  updated_at  TEXT DEFAULT (datetime('now'))
+);
+`;
+// Stores: tracking_since, all_time_peak, all_time_peak_date, today_peak,
+//         today_date, unique_today (JSON array), unique_day_peak,
+//         unique_day_peak_date, yesterday_unique
+
 // ─── Activity log (item movements, world events, state changes) ─────────────
 
 const ACTIVITY_LOG = `
@@ -641,6 +795,10 @@ const ALL_TABLES = [
   DEAD_BODIES,
   CONTAINERS,
   LOOT_ACTORS,
+  ITEM_GROUPS,
+  ITEM_INSTANCES,
+  ITEM_MOVEMENTS,
+  WORLD_DROPS,
   QUESTS,
   SERVER_SETTINGS,
   GAME_ITEMS,
@@ -655,6 +813,7 @@ const ALL_TABLES = [
   GAME_SPAWN_LOCATIONS,
   GAME_SERVER_SETTINGS,
   SNAPSHOTS,
+  SERVER_PEAKS,
   ACTIVITY_LOG,
   CHAT_LOG,
   INDEXES,
