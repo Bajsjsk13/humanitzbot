@@ -67,6 +67,17 @@ const {
  * @param {import('../db/database')} db - Initialised HumanitZDB instance
  */
 function seed(db) {
+  // Skip seeding if game_items already has data (template DB pre-populated)
+  try {
+    const count = db.db.prepare('SELECT COUNT(*) as n FROM game_items').get();
+    if (count && count.n > 0) {
+      console.log(`[GameRef] Game reference data already seeded (${count.n} items) — skipping`);
+      return;
+    }
+  } catch {
+    // Table doesn't exist yet — proceed with seeding
+  }
+
   // Core reference tables
   seedItems(db);
   seedProfessions(db);

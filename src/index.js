@@ -35,6 +35,7 @@ const gameReference = require('./parsers/game-reference');
 const { writeAgent } = require('./parsers/agent-builder');
 const WebMapServer = require('./web-map/server');
 const SnapshotService = require('./tracking/snapshot-service');
+const StdinConsole = require('./stdin-console');
 
 // ── Create Discord client ───────────────────────────────────
 const intents = [
@@ -167,6 +168,7 @@ let playtimeFlushTimer; // periodic playtime → DB flush
 let snapshotService; // SnapshotService — timeline recording
 let activityLog;   // ActivityLog instance
 let adminChannel;  // cached for online/offline notifications
+let stdinConsole;  // interactive stdin console for headless hosts
 const startedAt = new Date();
 
 const moduleStatus = {};
@@ -707,6 +709,14 @@ client.once(Events.ClientReady, async (readyClient) => {
     console.log('[BOT] Web map disabled — set WEB_MAP_PORT in .env to enable');
   }
 
+  // ── Stdin console (for headless hosts like Bisect) ──────────
+  if (config.enableStdinConsole) {
+    stdinConsole = new StdinConsole({ db, writable: config.stdinConsoleWritable });
+    stdinConsole.start();
+    setStatus('Console', '🟢 Active (stdin)');
+    console.log(`[BOT] Stdin console active${config.stdinConsoleWritable ? ' (writable)' : ' (read-only)'}`);
+  }
+
   // ── Post online notification to admin channel ──
   try {
     if (config.adminChannelId) {
@@ -923,6 +933,7 @@ async function shutdown(reason = 'Manual shutdown') {
   if (activityLog) activityLog.stop();
   if (saveService) saveService.stop();
   if (multiServerManager) await multiServerManager.stopAll();
+  if (stdinConsole) stdinConsole.stop();
   playerStats.stop();
   if (playtimeFlushTimer) clearInterval(playtimeFlushTimer);
   playtime.stop();

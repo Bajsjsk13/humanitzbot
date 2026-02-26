@@ -166,6 +166,10 @@ const config = {
   enableSshResources: envBool('ENABLE_SSH_RESOURCES', false),
   sshPort: parseInt(process.env.SSH_PORT, 10) || 0,   // 0 = use FTP_PORT
 
+  // Interactive stdin console for headless hosts (Bisect, etc.)
+  enableStdinConsole: envBool('ENABLE_STDIN_CONSOLE', false),
+  stdinConsoleWritable: envBool('STDIN_CONSOLE_WRITABLE', false),
+
   // Cache TTL for resource metrics (default 30s)
   resourceCacheTtl: Math.max(parseInt(process.env.RESOURCE_CACHE_TTL, 10) || 30000, 10000),
 

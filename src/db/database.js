@@ -48,6 +48,15 @@ class HumanitZDB {
     if (!this._memory) {
       const dir = path.dirname(this._dbPath);
       if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+
+      // Copy template DB on first run (pre-seeded with game reference data)
+      if (!fs.existsSync(this._dbPath)) {
+        const templatePath = path.join(path.dirname(this._dbPath), 'humanitz-template.db');
+        if (fs.existsSync(templatePath)) {
+          fs.copyFileSync(templatePath, this._dbPath);
+          console.log(`[${this._label}] Copied template DB as starting point`);
+        }
+      }
     }
 
     this._db = new Database(this._memory ? ':memory:' : this._dbPath);

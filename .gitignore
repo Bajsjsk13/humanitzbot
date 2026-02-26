@@ -7,6 +7,8 @@ node_modules/
 data/*
 # Game reference data required for DB seeding
 !data/game-tables-raw.json
+# Pre-seeded template DB (game reference tables only, no user data)
+!data/humanitz-template.db
 
 *.7z
 *.sav
