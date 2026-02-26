@@ -2,9 +2,10 @@ node_modules/
 .env
 .env.backup*
 
-# Runtime data directory (user data, caches, downloaded logs)
+# Runtime data directory (caches, DB, state files)
+# Subdirectories: logs/ (server logs), backups/ (auto-snapshots), game-reference/ (dt-*.txt dumps)
 data/*
-# Game reference data required for DB seeding (will be replaced by humanitz-template.db in Phase 1g)
+# Game reference data required for DB seeding
 !data/game-tables-raw.json
 
 *.7z
