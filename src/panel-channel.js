@@ -702,9 +702,15 @@ function _applyLiveConfig(field, value) {
   }
 }
 
-/** Read cached game server settings from data/server-settings.json. */
-function _getCachedSettings() {
-  try { return JSON.parse(fs.readFileSync(SETTINGS_CACHE, 'utf8')); } catch { return {}; }
+/** Read cached game server settings from bot_state or data/server-settings.json. */
+function _getCachedSettings(db) {
+  try {
+    if (db) {
+      const data = db.getStateJSON('server_settings', null);
+      if (data) return data;
+    }
+    return JSON.parse(fs.readFileSync(SETTINGS_CACHE, 'utf8'));
+  } catch { return {}; }
 }
 
 /** Safely build a modal title within Discord's 45-char limit. */
@@ -1603,7 +1609,7 @@ class PanelChannel {
       return true;
     }
 
-    const cached = _getCachedSettings();
+    const cached = _getCachedSettings(this._db);
 
     const modal = new ModalBuilder()
       .setCustomId(`panel_game_modal:${categoryId}`)
@@ -1732,7 +1738,7 @@ class PanelChannel {
       }
 
       const changes = [];
-      const cached = _getCachedSettings();
+      const cached = _getCachedSettings(this._db);
 
       for (const setting of category.settings) {
         const newValue = interaction.fields.getTextInputValue(setting.ini).trim();
@@ -3201,6 +3207,13 @@ class PanelChannel {
 
   _loadMessageIds() {
     try {
+      if (this._db) {
+        return {
+          panelBot: this._db.getState('msg_id_panel_bot') || null,
+          panelServer: this._db.getState('msg_id_panel_server') || null,
+          servers: this._db.getStateJSON('msg_id_panel_servers', {}),
+        };
+      }
       const fp = path.join(PanelChannel._DATA_DIR, 'message-ids.json');
       if (fs.existsSync(fp)) {
         const data = JSON.parse(fs.readFileSync(fp, 'utf8'));
@@ -3216,13 +3229,18 @@ class PanelChannel {
 
   _saveMessageIds() {
     try {
-      const fp = path.join(PanelChannel._DATA_DIR, 'message-ids.json');
-      let data = {};
-      try { if (fs.existsSync(fp)) data = JSON.parse(fs.readFileSync(fp, 'utf8')); } catch {}
-      if (this.panelMessage) data.panelUnified = this.panelMessage.id;
-      // Legacy compat — also save as panelBot for old interaction handlers
-      if (this.panelMessage) data.panelBot = this.panelMessage.id;
-      fs.writeFileSync(fp, JSON.stringify(data, null, 2));
+      if (this._db) {
+        if (this.panelMessage) {
+          this._db.setState('msg_id_panel_bot', this.panelMessage.id);
+        }
+      } else {
+        const fp = path.join(PanelChannel._DATA_DIR, 'message-ids.json');
+        let data = {};
+        try { if (fs.existsSync(fp)) data = JSON.parse(fs.readFileSync(fp, 'utf8')); } catch {}
+        if (this.panelMessage) data.panelUnified = this.panelMessage.id;
+        if (this.panelMessage) data.panelBot = this.panelMessage.id;
+        fs.writeFileSync(fp, JSON.stringify(data, null, 2));
+      }
     } catch {}
   }
 

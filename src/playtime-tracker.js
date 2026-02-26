@@ -3,7 +3,6 @@ const path = require('path');
 const _defaultConfig = require('./config');
 
 const DEFAULT_DATA_DIR = path.join(__dirname, '..', 'data');
-const SAVE_INTERVAL = 60000; // save to disk every 60s
 
 class PlaytimeTracker {
   /**
@@ -15,40 +14,48 @@ class PlaytimeTracker {
   constructor(options = {}) {
     this._data = null;
     this._activeSessions = new Map(); // id → login timestamp
-    this._saveTimer = null;
-    this._dirty = false;
     this._currentOnlineCount = 0;
     this._db = options.db || null; // optional HumanitZDB for playtime syncing
     // Per-instance overrides (for multi-server support)
     this._dataDir = options.dataDir || DEFAULT_DATA_DIR;
-    this._dataFile = path.join(this._dataDir, 'playtime.json');
     this._config = options.config || _defaultConfig;
     this._label = options.label || 'PLAYTIME';
   }
 
   init() {
     if (this._data) return; // already initialised
-    this._loadFromDb();      // try DB first
-    if (!this._data) this._load(); // fall back to JSON
+    this._loadFromDb();      // load from DB
+    if (!this._data) {
+      // DB has nothing yet — create empty structure
+      this._data = {
+        trackingSince: new Date().toISOString(),
+        players: {},
+        peaks: {
+          allTimePeak: 0,
+          allTimePeakDate: null,
+          todayPeak: 0,
+          todayDate: this._config.getToday(),
+          uniqueToday: [],
+          uniqueDayPeak: 0,
+          uniqueDayPeakDate: null,
+          yesterdayUnique: 0,
+        },
+      };
+    }
     this._cleanGhostEntries();
     this._backfillUniqueDayPeak();
-    this._migrateJsonToDb(); // one-time: push any JSON-only data into DB
-    // Periodic save so we don't lose data on crash
-    this._saveTimer = setInterval(() => this._autoSave(), SAVE_INTERVAL);
     console.log(`[${this._label}] Tracking since ${this._data.trackingSince}`);
     console.log(`[${this._label}] ${Object.keys(this._data.players).length} player(s) in database`);
   }
 
   stop() {
-    // Close all active sessions before saving
+    // Close all active sessions before stopping
     const now = Date.now();
     for (const [id, loginTime] of this._activeSessions) {
       this._addPlaytime(id, now - loginTime);
     }
     this._activeSessions.clear();
-    this._save();
-    if (this._saveTimer) clearInterval(this._saveTimer);
-    console.log(`[${this._label}] Saved and stopped.`);
+    console.log(`[${this._label}] Stopped.`);
   }
 
   /** Attach a HumanitZDB instance for unified playtime + alias syncing. */
@@ -88,7 +95,7 @@ class PlaytimeTracker {
     if (!existingSession) {
       this._data.players[id].sessions += 1;
     }
-    this._dirty = true;
+    this._leaderboardCache = null;
     this._persistPlaytime(id);
 
     // Register alias in unified identity DB
@@ -148,8 +155,8 @@ class PlaytimeTracker {
 
   getLeaderboard() {
     this._ensureInit();
-    // Return cached result when data hasn't changed and no active sessions
-    if (this._leaderboardCache && !this._dirty && this._activeSessions.size === 0) {
+    // Return cached result when no active sessions (cache invalidated on mutations)
+    if (this._leaderboardCache && this._activeSessions.size === 0) {
       return this._leaderboardCache;
     }
     const entries = [];
@@ -201,7 +208,6 @@ class PlaytimeTracker {
       this._data.peaks.todayPeak = count;
     }
 
-    this._dirty = true;
     this._persistPeaks();
   }
 
@@ -235,7 +241,6 @@ class PlaytimeTracker {
       this._data.peaks.uniqueDayPeakDate = new Date().toISOString();
     }
 
-    this._dirty = true;
     this._persistPeaks();
   }
 
@@ -325,49 +330,8 @@ class PlaytimeTracker {
       }
       console.log(`[${this._label}] Loaded ${rows.length} player(s) from database`);
     } catch (err) {
-      console.warn(`[${this._label}] DB load failed, falling back to JSON:`, err.message);
-      this._data = null; // ensure fallback triggers
-    }
-  }
-
-  /** One-time migration: push JSON playtime into the DB if not already there. */
-  _migrateJsonToDb() {
-    if (!this._db || !this._data) return;
-    try {
-      const dbRows = this._db.getAllPlayerPlaytime();
-      const dbIds = new Set(dbRows.map(r => r.steam_id));
-      let migrated = 0;
-      for (const [id, record] of Object.entries(this._data.players)) {
-        if (!/^\d{17}$/.test(id)) continue;
-        if (dbIds.has(id)) continue; // already in DB
-        this._db.upsertFullPlaytime(id, {
-          name: record.name || '',
-          totalMs: record.totalMs || 0,
-          sessions: record.sessions || 0,
-          firstSeen: record.firstSeen || null,
-          lastLogin: record.lastLogin || null,
-          lastSeen: record.lastSeen || null,
-        });
-        migrated++;
-      }
-      // Migrate peaks to server_peaks table
-      if (this._data.peaks) {
-        const p = this._data.peaks;
-        this._db.setServerPeak('all_time_peak', String(p.allTimePeak || 0));
-        this._db.setServerPeak('all_time_peak_date', p.allTimePeakDate || '');
-        this._db.setServerPeak('today_peak', String(p.todayPeak || 0));
-        this._db.setServerPeak('today_date', p.todayDate || '');
-        this._db.setServerPeak('unique_today', JSON.stringify(p.uniqueToday || []));
-        this._db.setServerPeak('unique_day_peak', String(p.uniqueDayPeak || 0));
-        this._db.setServerPeak('unique_day_peak_date', p.uniqueDayPeakDate || '');
-        this._db.setServerPeak('yesterday_unique', String(p.yesterdayUnique || 0));
-        this._db.setServerPeak('tracking_since', this._data.trackingSince || '');
-      }
-      if (migrated > 0) {
-        console.log(`[${this._label}] Migrated ${migrated} player(s) from JSON to DB`);
-      }
-    } catch (err) {
-      console.warn(`[${this._label}] JSON→DB migration failed (non-critical):`, err.message);
+      console.error(`[${this._label}] DB load failed:`, err.message);
+      this._data = null;
     }
   }
 
@@ -452,7 +416,6 @@ class PlaytimeTracker {
       if (this._data.peaks && Array.isArray(this._data.peaks.uniqueToday)) {
         this._data.peaks.uniqueToday = this._data.peaks.uniqueToday.filter(id => /^\d{17}$/.test(id));
       }
-      this._dirty = true;
       console.log(`[${this._label}] Cleaned ${toDelete.length} ghost entries`);
     }
   }
@@ -498,7 +461,6 @@ class PlaytimeTracker {
         this._data.peaks.uniqueDayPeakDate = new Date(
           parseInt(parts[2]), parseInt(parts[1]) - 1, parseInt(parts[0]), 12, 0, 0
         ).toISOString();
-        this._dirty = true;
         console.log(`[${this._label}] Backfilled uniqueDayPeak: ${bestCount} on ${bestDate}`);
       }
     } catch (err) {
@@ -510,7 +472,7 @@ class PlaytimeTracker {
     if (!this._data.players[id]) return;
     this._data.players[id].totalMs += durationMs;
     this._data.players[id].lastSeen = (timestamp || new Date()).toISOString();
-    this._dirty = true;
+    this._leaderboardCache = null;
     this._persistPlaytime(id);
   }
 
@@ -528,126 +490,18 @@ class PlaytimeTracker {
     return parts.join(', ');
   }
 
-  _load() {
-    try {
-      if (fs.existsSync(this._dataFile)) {
-        const raw = fs.readFileSync(this._dataFile, 'utf8');
-        const parsed = JSON.parse(raw);
-        // Validate: must be an object with a players property
-        if (!parsed || typeof parsed !== 'object' || !parsed.players || typeof parsed.players !== 'object') {
-          console.error(`[${this._label}] playtime.json is corrupt (missing players object) — creating fresh`);
-          // Backup the corrupt file for inspection
-          const corruptBackup = this._dataFile.replace('.json', `-corrupt-${Date.now()}.json`);
-          fs.copyFileSync(this._dataFile, corruptBackup);
-          console.log(`[${this._label}] Corrupt file backed up to ${path.basename(corruptBackup)}`);
-          this._createFresh();
-          return;
-        }
-        this._data = parsed;
-        console.log(`[${this._label}] Loaded existing data from playtime.json`);
-      } else {
-        this._createFresh();
-      }
-    } catch (err) {
-      console.error(`[${this._label}] Failed to load data, creating fresh:`, err.message);
-      this._createFresh();
-    }
-  }
-
-  _createFresh() {
-    this._data = {
-      trackingSince: new Date().toISOString(),
-      players: {},
-      peaks: {
-        allTimePeak: 0,
-        allTimePeakDate: null,
-        todayPeak: 0,
-        todayDate: this._config.getToday(),
-        uniqueToday: [],
-        uniqueDayPeak: 0,
-        uniqueDayPeakDate: null,
-        yesterdayUnique: 0,
-      },
-    };
-    this._save();
-    console.log(`[${this._label}] Created fresh playtime.json`);
-  }
-
-  _save(doBackup = false) {
-    try {
-      if (!this._data || typeof this._data !== 'object') {
-        console.warn(`[${this._label}] Not saving: _data is null or invalid`);
-        return false;
-      }
-      if (!fs.existsSync(this._dataDir)) {
-        fs.mkdirSync(this._dataDir, { recursive: true });
-      }
-      // Atomic write: write to temp file then rename
-      const tmpFile = this._dataFile + '.tmp';
-      fs.writeFileSync(tmpFile, JSON.stringify(this._data, null, 2), 'utf8');
-      fs.renameSync(tmpFile, this._dataFile);
-      this._dirty = false;
-      // Backup logic
-      if (doBackup) {
-        const ts = Date.now();
-        const backupFile = path.join(this._dataDir, `playtime-backup-${ts}.json`);
-        fs.copyFileSync(this._dataFile, backupFile);
-        // Prune old backups (keep last 5)
-        const files = fs.readdirSync(this._dataDir)
-          .filter(f => f.startsWith('playtime-backup-') && f.endsWith('.json'))
-          .map(f => ({ f, t: parseInt(f.split('-')[2]) }))
-          .filter(x => !isNaN(x.t))
-          .sort((a, b) => b.t - a.t);
-        for (let i = 5; i < files.length; ++i) {
-          try { fs.unlinkSync(path.join(this._dataDir, files[i].f)); } catch {}
-        }
-      }
-      return true;
-    } catch (err) {
-      console.error(`[${this._label}] Failed to save:`, err.message);
-      return false;
-    }
-  }
-
-  _autoSave() {
-    // If no active sessions, just save if dirty
-    if (this._activeSessions.size === 0) {
-      if (this._dirty) this._save();
-      return;
-    }
-
-    // Flush active sessions' running time into records
+  /**
+   * Flush active sessions' accumulated playtime to the DB.
+   * Call this periodically (e.g. every 60s) to prevent data loss on crash.
+   * Unlike the old _autoSave(), this writes directly to DB — no JSON involved.
+   */
+  flushActiveSessions() {
+    if (!this._data || this._activeSessions.size === 0) return;
     const now = Date.now();
-    const sessionDeltas = new Map();
-    const oldLastSeen = new Map();
     for (const [id, loginTime] of this._activeSessions) {
       const delta = now - loginTime;
-      sessionDeltas.set(id, delta);
-      if (this._data.players[id]) {
-        oldLastSeen.set(id, this._data.players[id].lastSeen);
-      }
       this._addPlaytime(id, delta);
-    }
-
-    // Every 15 minutes, do a backup
-    const doBackup = (now % (15 * 60 * 1000)) < SAVE_INTERVAL;
-    const saved = this._save(doBackup);
-    if (saved !== false) {
-      // Save succeeded — reset session starts so time isn't double-counted
-      for (const [id] of sessionDeltas) {
-        this._activeSessions.set(id, now);
-      }
-    } else {
-      // Save failed — rollback totalMs and lastSeen
-      for (const [id, delta] of sessionDeltas) {
-        if (this._data.players[id]) {
-          this._data.players[id].totalMs -= delta;
-          const prevSeen = oldLastSeen.get(id);
-          if (prevSeen !== undefined) {
-            this._data.players[id].lastSeen = prevSeen;
-          }
-        }
-      }
+      this._activeSessions.set(id, now); // reset start so time isn't double-counted
     }
   }
 }

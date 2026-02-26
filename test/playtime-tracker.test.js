@@ -62,8 +62,8 @@ const fs = require('fs');
 const path = require('path');
 
 /**
- * Helper: create a fresh playtime tracker isolated from the real data file.
- * We stub _load, _save, and config.getToday for controlled testing.
+ * Helper: create a fresh playtime tracker isolated from any DB.
+ * We stub config.getToday for controlled testing.
  */
 function freshTracker(today = '2026-02-20') {
   // Clear the module cache so we get a fresh singleton
@@ -92,10 +92,6 @@ function freshTracker(today = '2026-02-20') {
       yesterdayUnique: 0,
     },
   };
-  tracker._dirty = false;
-
-  // No-op save
-  tracker._save = () => {};
 
   return { tracker, config, origGetToday, modPath };
 }
@@ -107,7 +103,6 @@ describe('Peak tracking', () => {
     // Restore config.getToday and clean up
     if (origGetToday) config.getToday = origGetToday;
     if (modPath) delete require.cache[modPath];
-    clearInterval(tracker?._saveTimer);
   });
 
   it('recordPlayerCount updates allTimePeak and todayPeak', () => {

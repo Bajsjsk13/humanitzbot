@@ -61,9 +61,13 @@ function _rconColorLink(link) {
 
 // ── Standalone helpers (used by buildWelcomeContent and class) ──
 
-function loadCachedSettings(dataDir) {
-  const filePath = path.join(dataDir || DEFAULT_DATA_DIR, 'server-settings.json');
+function loadCachedSettings(dataDir, db) {
   try {
+    if (db) {
+      const data = db.getStateJSON('server_settings', null);
+      if (data) return data;
+    }
+    const filePath = path.join(dataDir || DEFAULT_DATA_DIR, 'server-settings.json');
     if (fs.existsSync(filePath)) {
       return JSON.parse(fs.readFileSync(filePath, 'utf8'));
     }
@@ -71,9 +75,13 @@ function loadCachedSettings(dataDir) {
   return {};
 }
 
-function loadWelcomeStats(dataDir) {
-  const filePath = path.join(dataDir || DEFAULT_DATA_DIR, 'welcome-stats.json');
+function loadWelcomeStats(dataDir, db) {
   try {
+    if (db) {
+      const data = db.getStateJSON('welcome_stats', null);
+      if (data) return data;
+    }
+    const filePath = path.join(dataDir || DEFAULT_DATA_DIR, 'welcome-stats.json');
     if (fs.existsSync(filePath)) {
       return JSON.parse(fs.readFileSync(filePath, 'utf8'));
     }
@@ -196,7 +204,8 @@ async function buildWelcomeContent(deps = {}) {
   const ps = deps.playerStats || _defaultPlayerStats;
   const getInfo = deps.getServerInfo || getServerInfo;
   const dataDir = deps.dataDir || DEFAULT_DATA_DIR;
-  const settings = loadCachedSettings(dataDir);
+  const db = deps.db || null;
+  const settings = loadCachedSettings(dataDir, db);
   const parts = [];
 
   // ── Title ──
@@ -244,7 +253,7 @@ async function buildWelcomeContent(deps = {}) {
 
   // ── Leaderboards ──
   const leaderboard = pt.getLeaderboard();
-  const welcomeStats = loadWelcomeStats(dataDir);
+  const welcomeStats = loadWelcomeStats(dataDir, db);
 
   if (leaderboard.length > 0) {
     parts.push('');

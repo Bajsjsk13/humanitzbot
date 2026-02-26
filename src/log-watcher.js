@@ -8,10 +8,6 @@ const { cleanName } = require('./ue4-names');
 const _defaultPlaytime = require('./playtime-tracker');
 const _defaultPlayerStats = require('./player-stats');
 
-const OFFSETS_PATH = path.join(__dirname, '..', 'data', 'log-offsets.json');
-const PVP_KILLS_PATH = path.join(__dirname, '..', 'data', 'pvp-kills.json');
-const DAY_COUNTS_PATH = path.join(__dirname, '..', 'data', 'day-counts.json');
-
 class LogWatcher {
   constructor(client, deps = {}) {
     this._config = deps.config || _defaultConfig;
@@ -179,16 +175,26 @@ class LogWatcher {
 
   _loadDayCounts() {
     try {
+      // DB-first: try bot_state
+      if (this._db) {
+        const raw = this._db.getStateJSON('day_counts', null);
+        if (raw && raw.date === this._config.getToday()) {
+          this._dayCounts = { ...this._dayCounts, ...raw.counts };
+          console.log(`[${this._label}] Restored day counts for ${raw.date} (DB)`);
+          return;
+        }
+        return; // DB present but no matching data — start fresh
+      }
+      // Fallback: JSON file (multi-server without DB)
       if (fs.existsSync(this._dayCountsPath)) {
         const raw = JSON.parse(fs.readFileSync(this._dayCountsPath, 'utf8'));
         if (raw && raw.date === this._config.getToday()) {
-          // Only restore if it's still the same day
           this._dayCounts = { ...this._dayCounts, ...raw.counts };
           console.log(`[${this._label}] Restored day counts for ${raw.date}`);
         }
       }
     } catch (err) {
-      console.warn(`[${this._label}] Could not load day-counts.json:`, err.message);
+      console.warn(`[${this._label}] Could not load day counts:`, err.message);
     }
   }
 
@@ -196,10 +202,14 @@ class LogWatcher {
     if (!this._dayCountsDirty) return;
     try {
       const data = { date: this._dailyDate || this._config.getToday(), counts: this._dayCounts };
-      fs.writeFileSync(this._dayCountsPath, JSON.stringify(data, null, 2), 'utf8');
+      if (this._db) {
+        this._db.setStateJSON('day_counts', data);
+      } else {
+        fs.writeFileSync(this._dayCountsPath, JSON.stringify(data, null, 2), 'utf8');
+      }
       this._dayCountsDirty = false;
     } catch (err) {
-      console.warn(`[${this._label}] Could not save day-counts.json:`, err.message);
+      console.warn(`[${this._label}] Could not save day counts:`, err.message);
     }
   }
 
@@ -212,6 +222,17 @@ class LogWatcher {
 
   _loadPvpKills() {
     try {
+      // DB-first: try bot_state
+      if (this._db) {
+        const raw = this._db.getStateJSON('pvp_kills', null);
+        if (Array.isArray(raw)) {
+          this._pvpKills = raw;
+          console.log(`[${this._label}:PVP] Loaded ${raw.length} PvP kill(s) from DB`);
+          return;
+        }
+        return; // DB present but no data
+      }
+      // Fallback: JSON file (multi-server without DB)
       if (fs.existsSync(this._pvpKillsPath)) {
         const raw = JSON.parse(fs.readFileSync(this._pvpKillsPath, 'utf8'));
         if (Array.isArray(raw)) {
@@ -220,7 +241,7 @@ class LogWatcher {
         }
       }
     } catch (err) {
-      console.warn(`[${this._label}:PVP] Could not load pvp-kills.json:`, err.message);
+      console.warn(`[${this._label}:PVP] Could not load pvp kills:`, err.message);
       this._pvpKills = [];
     }
   }
@@ -228,12 +249,16 @@ class LogWatcher {
   _savePvpKills() {
     if (!this._pvpKillsDirty) return;
     try {
-      const dir = path.dirname(this._pvpKillsPath);
-      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-      fs.writeFileSync(this._pvpKillsPath, JSON.stringify(this._pvpKills, null, 2), 'utf8');
+      if (this._db) {
+        this._db.setStateJSON('pvp_kills', this._pvpKills);
+      } else {
+        const dir = path.dirname(this._pvpKillsPath);
+        if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+        fs.writeFileSync(this._pvpKillsPath, JSON.stringify(this._pvpKills, null, 2), 'utf8');
+      }
       this._pvpKillsDirty = false;
     } catch (err) {
-      console.warn(`[${this._label}:PVP] Could not save pvp-kills.json:`, err.message);
+      console.warn(`[${this._label}:PVP] Could not save pvp kills:`, err.message);
     }
   }
 
@@ -450,6 +475,18 @@ class LogWatcher {
 
   _loadOffsets() {
     try {
+      // DB-first: try bot_state
+      if (this._db) {
+        const raw = this._db.getStateJSON('log_offsets', null);
+        if (raw) {
+          return {
+            hmzLogSize: typeof raw.hmzLogSize === 'number' ? raw.hmzLogSize : 0,
+            connectLogSize: typeof raw.connectLogSize === 'number' ? raw.connectLogSize : 0,
+          };
+        }
+        return null;
+      }
+      // Fallback: JSON file (multi-server without DB)
       if (fs.existsSync(this._offsetsPath)) {
         const raw = JSON.parse(fs.readFileSync(this._offsetsPath, 'utf8'));
         return {
@@ -465,13 +502,18 @@ class LogWatcher {
 
   _saveOffsets() {
     try {
-      const dir = path.dirname(this._offsetsPath);
-      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-      fs.writeFileSync(this._offsetsPath, JSON.stringify({
+      const data = {
         hmzLogSize: this.lastSize,
         connectLogSize: this._connectLastSize,
         savedAt: new Date().toISOString(),
-      }, null, 2));
+      };
+      if (this._db) {
+        this._db.setStateJSON('log_offsets', data);
+      } else {
+        const dir = path.dirname(this._offsetsPath);
+        if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+        fs.writeFileSync(this._offsetsPath, JSON.stringify(data, null, 2));
+      }
     } catch (err) {
       console.warn(`[${this._label}] Could not save offsets:`, err.message);
     }
@@ -672,21 +714,24 @@ class LogWatcher {
     // First startup — check for stale day-counts from a previous session on a different day
     if (!this._dailyDate) {
       try {
-        if (fs.existsSync(this._dayCountsPath)) {
-          const raw = JSON.parse(fs.readFileSync(this._dayCountsPath, 'utf8'));
-          if (raw && raw.date && raw.date !== today && raw.counts) {
-            const total = Object.values(raw.counts).reduce((s, v) => s + (v || 0), 0);
-            if (total > 0) {
-              // Post the old day's summary before creating today's thread
-              this._dailyDate = raw.date;
-              this._dayCounts = { ...this._dayCounts, ...raw.counts };
-              await this._postDailySummary();
-              this._dayCounts = { connects: 0, disconnects: 0, deaths: 0, builds: 0, damage: 0, loots: 0, raidHits: 0, destroyed: 0, admin: 0, cheat: 0, pvpKills: 0 };
-              this._dayCountsDirty = true;
-              this._saveDayCounts();
-              this._dailyDate = null; // reset so normal flow continues
-              console.log(`[${this._label}] Posted stale daily summary for ${raw.date}`);
-            }
+        let raw = null;
+        if (this._db) {
+          raw = this._db.getStateJSON('day_counts', null);
+        } else if (fs.existsSync(this._dayCountsPath)) {
+          raw = JSON.parse(fs.readFileSync(this._dayCountsPath, 'utf8'));
+        }
+        if (raw && raw.date && raw.date !== today && raw.counts) {
+          const total = Object.values(raw.counts).reduce((s, v) => s + (v || 0), 0);
+          if (total > 0) {
+            // Post the old day's summary before creating today's thread
+            this._dailyDate = raw.date;
+            this._dayCounts = { ...this._dayCounts, ...raw.counts };
+            await this._postDailySummary();
+            this._dayCounts = { connects: 0, disconnects: 0, deaths: 0, builds: 0, damage: 0, loots: 0, raidHits: 0, destroyed: 0, admin: 0, cheat: 0, pvpKills: 0 };
+            this._dayCountsDirty = true;
+            this._saveDayCounts();
+            this._dailyDate = null; // reset so normal flow continues
+            console.log(`[${this._label}] Posted stale daily summary for ${raw.date}`);
           }
         }
       } catch (err) {

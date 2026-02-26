@@ -9,7 +9,7 @@
  * Schema is applied via database.js on first run and auto-migrated on updates.
  */
 
-const SCHEMA_VERSION = 11;
+const SCHEMA_VERSION = 12;
 
 // ─── Player data ────────────────────────────────────────────────────────────
 
@@ -1152,6 +1152,16 @@ CREATE TABLE IF NOT EXISTS meta (
 );
 `;
 
+// ─── Bot State (key-value store for runtime operational state) ──────────────
+
+const BOT_STATE = `
+CREATE TABLE IF NOT EXISTS bot_state (
+  key        TEXT PRIMARY KEY,
+  value      TEXT,
+  updated_at TEXT DEFAULT (datetime('now'))
+);
+`;
+
 // ─── Indexes ────────────────────────────────────────────────────────────────
 
 const INDEXES = `
@@ -1167,6 +1177,7 @@ CREATE INDEX IF NOT EXISTS idx_clan_members_steam ON clan_members(steam_id);
 
 const ALL_TABLES = [
   META,
+  BOT_STATE,
   PLAYERS,
   PLAYER_ALIASES,
   CLANS,

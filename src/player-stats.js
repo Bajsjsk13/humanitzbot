@@ -3,7 +3,6 @@ const path = require('path');
 const _defaultPlaytime = require('./playtime-tracker');
 
 const DEFAULT_DATA_DIR = path.join(__dirname, '..', 'data');
-const SAVE_INTERVAL = 60000;
 
 class PlayerStats {
   /**
@@ -14,34 +13,27 @@ class PlayerStats {
    */
   constructor(options = {}) {
     this._data = null;
-    this._saveTimer = null;
-    this._dirty = false;
     this._idMap = null; // Map<lowerName, steamId> from PlayerIDMapped.txt
     this._nameIndex = new Map(); // lowerName → id for O(1) lookups
     this._db = options.db || null; // optional HumanitZDB for alias registration
     // Per-instance overrides (for multi-server support)
     this._dataDir = options.dataDir || DEFAULT_DATA_DIR;
-    this._dataFile = path.join(this._dataDir, 'player-stats.json');
     this._playtime = options.playtime || _defaultPlaytime;
     this._label = options.label || 'PLAYER STATS';
   }
 
   init() {
     if (this._data) return; // already initialised
-    this._loadFromDb();      // try DB first
-    if (!this._data) this._load(); // fall back to JSON
+    this._loadFromDb();      // load from DB
+    if (!this._data) this._data = { players: {} }; // empty if DB has nothing yet
     this._buildNameIndex();
     this._loadLocalIdMap(); // seed name→SteamID from cached PlayerIDMapped.txt
-    this._migrateJsonToDb(); // one-time: push any JSON-only data into DB
-    this._saveTimer = setInterval(() => this._autoSave(), SAVE_INTERVAL);
     const count = Object.keys(this._data.players).length;
     console.log(`[${this._label}] Loaded ${count} player(s) from database`);
   }
 
   stop() {
-    this._save();
-    if (this._saveTimer) clearInterval(this._saveTimer);
-    console.log(`[${this._label}] Saved and stopped.`);
+    console.log(`[${this._label}] Stopped.`);
   }
 
   /** Attach a HumanitZDB instance for unified alias registration. */
@@ -67,7 +59,6 @@ class PlayerStats {
             console.log(`[${this._label}] Name change detected via ID map: "${record.name}" → "${name}" (${steamId})`);
           }
           record.name = name;
-          this._dirty = true;
         }
       }
     }
@@ -143,47 +134,6 @@ class PlayerStats {
     }
   }
 
-  /** One-time migration: push JSON stats into the DB if not already there. */
-  _migrateJsonToDb() {
-    if (!this._db || !this._data) return;
-    try {
-      const dbRows = this._db.getAllPlayerLogStats();
-      const dbIds = new Set(dbRows.map(r => r.steam_id));
-      let migrated = 0;
-      for (const [id, record] of Object.entries(this._data.players)) {
-        if (!id || id.startsWith('name:') || !/^\d{17}$/.test(id)) continue;
-        if (dbIds.has(id)) continue; // already in DB
-        this._db.upsertFullLogStats(id, {
-          name: record.name || '',
-          deaths: record.deaths,
-          pvpKills: record.pvpKills,
-          pvpDeaths: record.pvpDeaths,
-          builds: record.builds,
-          containersLooted: record.containersLooted,
-          damageTakenTotal: Object.values(record.damageTaken || {}).reduce((a, b) => a + b, 0),
-          raidsOut: record.raidsOut,
-          raidsIn: record.raidsIn,
-          connects: record.connects,
-          disconnects: record.disconnects,
-          adminAccess: record.adminAccess,
-          destroyedOut: record.destroyedOut,
-          destroyedIn: record.destroyedIn,
-          buildItems: record.buildItems,
-          killedBy: record.killedBy,
-          damageTaken: record.damageTaken,
-          cheatFlags: record.cheatFlags,
-          lastEvent: record.lastEvent,
-        });
-        migrated++;
-      }
-      if (migrated > 0) {
-        console.log(`[${this._label}] Migrated ${migrated} player(s) from JSON to DB`);
-      }
-    } catch (err) {
-      console.warn(`[${this._label}] JSON→DB migration failed (non-critical):`, err.message);
-    }
-  }
-
   /** Find the key (steamId or name:X) for a given record in _data.players. */
   _getKeyForRecord(record) {
     for (const [key, rec] of Object.entries(this._data.players)) {
@@ -243,7 +193,6 @@ class PlayerStats {
       record.killedBy[cause] = (record.killedBy[cause] || 0) + 1;
     }
     record.lastEvent = (timestamp || new Date()).toISOString();
-    this._dirty = true;
     this._persistRecord(this._getKeyForRecord(record), record);
   }
 
@@ -261,7 +210,6 @@ class PlayerStats {
     victim.pvpDeaths++;
     victim.lastEvent = ts;
 
-    this._dirty = true;
     this._persistRecord(this._getKeyForRecord(killer), killer);
     this._persistRecord(this._getKeyForRecord(victim), victim);
   }
@@ -272,7 +220,6 @@ class PlayerStats {
     record.builds++;
     record.buildItems[itemName] = (record.buildItems[itemName] || 0) + 1;
     record.lastEvent = (timestamp || new Date()).toISOString();
-    this._dirty = true;
     this._persistRecord(steamId, record);
   }
 
@@ -295,7 +242,6 @@ class PlayerStats {
       owner.lastEvent = ts;
       this._persistRecord(ownerSteamId, owner);
     }
-    this._dirty = true;
   }
 
   recordLoot(playerName, steamId, ownerSteamId, timestamp) {
@@ -305,7 +251,6 @@ class PlayerStats {
     const record = this._getOrCreate(steamId, playerName);
     record.containersLooted++;
     record.lastEvent = (timestamp || new Date()).toISOString();
-    this._dirty = true;
     this._persistRecord(steamId, record);
   }
 
@@ -315,7 +260,6 @@ class PlayerStats {
     const cleanSource = this._classifyDamageSource(source);
     record.damageTaken[cleanSource] = (record.damageTaken[cleanSource] || 0) + 1;
     record.lastEvent = (timestamp || new Date()).toISOString();
-    this._dirty = true;
     this._persistRecord(this._getKeyForRecord(record), record);
   }
 
@@ -324,7 +268,6 @@ class PlayerStats {
     const record = this._getOrCreate(steamId, playerName);
     record.connects++;
     record.lastEvent = (timestamp || new Date()).toISOString();
-    this._dirty = true;
     this._persistRecord(steamId, record);
   }
 
@@ -333,7 +276,6 @@ class PlayerStats {
     const record = this._getOrCreate(steamId, playerName);
     record.disconnects++;
     record.lastEvent = (timestamp || new Date()).toISOString();
-    this._dirty = true;
     this._persistRecord(steamId, record);
   }
 
@@ -342,7 +284,6 @@ class PlayerStats {
     const record = this._getOrCreateByName(playerName);
     record.adminAccess++;
     record.lastEvent = (timestamp || new Date()).toISOString();
-    this._dirty = true;
     this._persistRecord(this._getKeyForRecord(record), record);
   }
 
@@ -354,7 +295,6 @@ class PlayerStats {
       timestamp: (timestamp || new Date()).toISOString(),
     });
     record.lastEvent = (timestamp || new Date()).toISOString();
-    this._dirty = true;
     this._persistRecord(steamId, record);
   }
 
@@ -429,8 +369,6 @@ class PlayerStats {
 
   getAllPlayers() {
     this._ensureInit();
-    // Return cached result when data hasn't changed
-    if (this._allPlayersCache && !this._dirty) return this._allPlayersCache;
     const entries = [];
     for (const [id, record] of Object.entries(this._data.players)) {
       entries.push({ id, ...record });
@@ -472,7 +410,6 @@ class PlayerStats {
           record.nameHistory.push({ name: record.name, until: new Date().toISOString() });
           console.log(`[${this._label}] Name change detected: "${record.name}" → "${name}" (${steamId})`);
         }
-        this._dirty = true;
       }
       // Update to current name
       record.name = name;
@@ -600,7 +537,6 @@ class PlayerStats {
     }
 
     delete this._data.players[nameKey];
-    this._dirty = true;
     console.log(`[${this._label}] Merged name-keyed record "${source.name}" into SteamID ${steamId}`);
   }
 
@@ -668,129 +604,6 @@ class PlayerStats {
 
   // ─── Persistence ──────────────────────────────────────────
 
-  _load() {
-    try {
-      if (fs.existsSync(this._dataFile)) {
-        const raw = fs.readFileSync(this._dataFile, 'utf8');
-        const parsed = JSON.parse(raw);
-        // Validate: must be an object with a players property
-        if (!parsed || typeof parsed !== 'object' || !parsed.players || typeof parsed.players !== 'object') {
-          console.error(`[${this._label}] player-stats.json is corrupt (missing players object) — creating fresh`);
-          // Backup the corrupt file for inspection
-          const corruptBackup = this._dataFile.replace('.json', `-corrupt-${Date.now()}.json`);
-          fs.copyFileSync(this._dataFile, corruptBackup);
-          console.log(`[${this._label}] Corrupt file backed up to ${path.basename(corruptBackup)}`);
-          this._createFresh();
-          return;
-        }
-        this._data = parsed;
-        // Migration: ensure all records have new fields
-        for (const record of Object.values(this._data.players)) {
-          if (!record.buildItems) record.buildItems = {};
-          if (!record.damageTaken) record.damageTaken = {};
-          if (record.containersLooted === undefined) record.containersLooted = 0;
-          if (record.destroyedOut === undefined) record.destroyedOut = 0;
-          if (record.destroyedIn === undefined) record.destroyedIn = 0;
-          if (record.connects === undefined) record.connects = 0;
-          if (record.disconnects === undefined) record.disconnects = 0;
-          if (record.adminAccess === undefined) record.adminAccess = 0;
-          if (!Array.isArray(record.cheatFlags)) record.cheatFlags = [];
-          if (!Array.isArray(record.nameHistory)) record.nameHistory = [];
-          if (record.pvpKills === undefined) record.pvpKills = 0;
-          if (record.pvpDeaths === undefined) record.pvpDeaths = 0;
-        }
-      } else {
-        this._createFresh();
-      }
-    } catch (err) {
-      console.error(`[${this._label}] Failed to load data, creating fresh:`, err.message);
-      this._createFresh();
-    }
-  }
-
-  _createFresh() {
-    this._data = { players: {} };
-    this._save();
-    console.log(`[${this._label}] Created fresh player-stats.json`);
-  }
-
-  _save(doBackup = false) {
-    try {
-      if (!this._data || typeof this._data !== 'object') {
-        console.warn(`[${this._label}] Not saving: _data is null or invalid`);
-        return false;
-      }
-      if (!fs.existsSync(this._dataDir)) fs.mkdirSync(this._dataDir, { recursive: true });
-      // Atomic write: write to temp file then rename
-      const tmpFile = this._dataFile + '.tmp';
-      fs.writeFileSync(tmpFile, JSON.stringify(this._data, null, 2), 'utf8');
-      fs.renameSync(tmpFile, this._dataFile);
-      this._dirty = false;
-      // Backup logic
-      if (doBackup) {
-        const ts = Date.now();
-        const backupFile = path.join(this._dataDir, `player-stats-backup-${ts}.json`);
-        fs.copyFileSync(this._dataFile, backupFile);
-        // Prune old backups (keep last 5)
-        const files = fs.readdirSync(this._dataDir)
-          .filter(f => f.startsWith('player-stats-backup-') && f.endsWith('.json'))
-          .map(f => ({ f, t: parseInt(f.split('-')[3]) }))
-          .filter(x => !isNaN(x.t))
-          .sort((a, b) => b.t - a.t);
-        for (let i = 5; i < files.length; ++i) {
-          try { fs.unlinkSync(path.join(this._dataDir, files[i].f)); } catch {}
-        }
-      }
-      return true;
-    } catch (err) {
-      console.error(`[${this._label}] Failed to save:`, err.message);
-      return false;
-    }
-  }
-
-  _autoSave() {
-    // Every 15 minutes, do a backup
-    const now = Date.now();
-    const doBackup = (now % (15 * 60 * 1000)) < SAVE_INTERVAL;
-    if (this._dirty) {
-      this._save(doBackup);
-      this._syncAllLogStatsToDb();
-    }
-  }
-
-  /** Batch-sync all player log stats to the DB (called during _autoSave). */
-  _syncAllLogStatsToDb() {
-    if (!this._db || !this._data) return;
-    try {
-      for (const [id, record] of Object.entries(this._data.players)) {
-        // Skip orphaned name: records (no real steam ID)
-        if (!id || id.startsWith('name:') || !/^\d{17}$/.test(id)) continue;
-        this._db.upsertFullLogStats(id, {
-          name: record.name || '',
-          deaths: record.deaths || 0,
-          pvpKills: record.pvpKills || 0,
-          pvpDeaths: record.pvpDeaths || 0,
-          builds: record.builds || 0,
-          containersLooted: record.containersLooted || 0,
-          damageTakenTotal: Object.values(record.damageTaken || {}).reduce((a, b) => a + b, 0),
-          raidsOut: record.raidsOut || 0,
-          raidsIn: record.raidsIn || 0,
-          connects: record.connects || 0,
-          disconnects: record.disconnects || 0,
-          adminAccess: record.adminAccess || 0,
-          destroyedOut: record.destroyedOut || 0,
-          destroyedIn: record.destroyedIn || 0,
-          buildItems: record.buildItems || {},
-          killedBy: record.killedBy || {},
-          damageTaken: record.damageTaken || {},
-          cheatFlags: record.cheatFlags || [],
-          lastEvent: record.lastEvent || null,
-        });
-      }
-    } catch (err) {
-      console.warn(`[${this._label}] DB log sync failed:`, err.message);
-    }
-  }
 }
 
 const _singleton = new PlayerStats();

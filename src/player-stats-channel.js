@@ -18,6 +18,7 @@ class PlayerStatsChannel {
     this._config = deps.config || _defaultConfig;
     this._playtime = deps.playtime || _defaultPlaytime;
     this._playerStats = deps.playerStats || _defaultPlayerStats;
+    this._db = deps.db || null;
     this._label = deps.label || 'PLAYER STATS CH';
     this._dataDir = deps.dataDir || _DEFAULT_DATA_DIR;
     this._serverId = deps.serverId || '';  // unique suffix for select menu IDs
@@ -210,15 +211,23 @@ class PlayerStatsChannel {
           }
           this._serverSettings._totalZombieKills = totalZombieKills;
         }
-        // Cache to disk for other modules
-        try { fs.writeFileSync(path.join(this._dataDir, 'server-settings.json'), JSON.stringify(this._serverSettings, null, 2)); } catch (_) {}
+        // Cache to DB (primary) and disk (for modules without DB access)
+        try {
+          if (this._db) this._db.setStateJSON('server_settings', this._serverSettings);
+          fs.writeFileSync(path.join(this._dataDir, 'server-settings.json'), JSON.stringify(this._serverSettings, null, 2));
+        } catch (_) {}
         console.log(`[${this._label}] Parsed server settings: ${Object.keys(this._serverSettings).length} keys`);
       } catch (err) {
         // Try loading cached settings
         try {
-          const _settingsFile = path.join(this._dataDir, 'server-settings.json');
-          if (fs.existsSync(_settingsFile)) {
-            this._serverSettings = JSON.parse(fs.readFileSync(_settingsFile, 'utf8'));
+          if (this._db) {
+            const cached = this._db.getStateJSON('server_settings', null);
+            if (cached) this._serverSettings = cached;
+          } else {
+            const _settingsFile = path.join(this._dataDir, 'server-settings.json');
+            if (fs.existsSync(_settingsFile)) {
+              this._serverSettings = JSON.parse(fs.readFileSync(_settingsFile, 'utf8'));
+            }
           }
         } catch (_) {}
         if (!err.message.includes('No such file')) {
@@ -236,6 +245,7 @@ class PlayerStatsChannel {
             playtime: this._playtime,
             playerStats: this._playerStats,
             dataDir: this._dataDir,
+            db: this._db,
           });
           await sftp.put(Buffer.from(content, 'utf8'), this._config.ftpWelcomePath);
           console.log(`[${this._label}] Updated WelcomeMessage.txt on server`);
@@ -369,6 +379,7 @@ class PlayerStatsChannel {
         topClans: topClans.slice(0, 5),
         weekly,
       };
+      if (this._db) this._db.setStateJSON('welcome_stats', cache);
       fs.writeFileSync(path.join(this._dataDir, 'welcome-stats.json'), JSON.stringify(cache, null, 2));
     } catch (err) {
       console.error(`[${this._label}] Failed to cache welcome stats:`, err.message);
@@ -414,9 +425,14 @@ class PlayerStatsChannel {
     // Load existing baseline
     let baseline = { weekStart: null, players: {} };
     try {
-      const _weeklyFile = path.join(this._dataDir, 'weekly-baseline.json');
-      if (fs.existsSync(_weeklyFile)) {
-        baseline = JSON.parse(fs.readFileSync(_weeklyFile, 'utf8'));
+      if (this._db) {
+        const saved = this._db.getStateJSON('weekly_baseline', null);
+        if (saved) baseline = saved;
+      } else {
+        const _weeklyFile = path.join(this._dataDir, 'weekly-baseline.json');
+        if (fs.existsSync(_weeklyFile)) {
+          baseline = JSON.parse(fs.readFileSync(_weeklyFile, 'utf8'));
+        }
       }
     } catch (_) {}
 
@@ -431,7 +447,11 @@ class PlayerStatsChannel {
         baseline.players[id] = this._snapshotPlayerStats(id);
       }
       try {
-        fs.writeFileSync(path.join(this._dataDir, 'weekly-baseline.json'), JSON.stringify(baseline, null, 2));
+        if (this._db) {
+          this._db.setStateJSON('weekly_baseline', baseline);
+        } else {
+          fs.writeFileSync(path.join(this._dataDir, 'weekly-baseline.json'), JSON.stringify(baseline, null, 2));
+        }
         console.log(`[${this._label}] Weekly baseline reset`);
       } catch (err) {
         console.error(`[${this._label}] Failed to write weekly baseline:`, err.message);
@@ -635,6 +655,9 @@ class PlayerStatsChannel {
 
   _loadMessageId() {
     try {
+      if (this._db) {
+        return this._db.getState('msg_id_player_stats') || null;
+      }
       const fp = path.join(this._dataDir, 'message-ids.json');
       if (fs.existsSync(fp)) {
         const data = JSON.parse(fs.readFileSync(fp, 'utf8'));
@@ -646,11 +669,15 @@ class PlayerStatsChannel {
   _saveMessageId() {
     if (!this.statusMessage) return;
     try {
-      const fp = path.join(this._dataDir, 'message-ids.json');
-      let data = {};
-      try { if (fs.existsSync(fp)) data = JSON.parse(fs.readFileSync(fp, 'utf8')); } catch {}
-      data.playerStats = this.statusMessage.id;
-      fs.writeFileSync(fp, JSON.stringify(data, null, 2));
+      if (this._db) {
+        this._db.setState('msg_id_player_stats', this.statusMessage.id);
+      } else {
+        const fp = path.join(this._dataDir, 'message-ids.json');
+        let data = {};
+        try { if (fs.existsSync(fp)) data = JSON.parse(fs.readFileSync(fp, 'utf8')); } catch {}
+        data.playerStats = this.statusMessage.id;
+        fs.writeFileSync(fp, JSON.stringify(data, null, 2));
+      }
     } catch {}
   }
 
@@ -724,31 +751,39 @@ class PlayerStatsChannel {
 
   _loadKillData() {
     try {
-      const _killFile = path.join(this._dataDir, 'kill-tracker.json');
-      if (fs.existsSync(_killFile)) {
-        this._killData = JSON.parse(fs.readFileSync(_killFile, 'utf8'));
-        const count = Object.keys(this._killData.players).length;
-        console.log(`[${this._label}] Loaded ${count} player(s) from kill-tracker.json`);
+      let raw = null;
+      if (this._db) {
+        raw = this._db.getStateJSON('kill_tracker', null);
+        if (raw) {
+          this._killData = raw;
+          const count = Object.keys(this._killData.players || {}).length;
+          console.log(`[${this._label}] Loaded ${count} player(s) from kill tracker (DB)`);
+        }
+      } else {
+        const _killFile = path.join(this._dataDir, 'kill-tracker.json');
+        if (fs.existsSync(_killFile)) {
+          raw = JSON.parse(fs.readFileSync(_killFile, 'utf8'));
+          this._killData = raw;
+          const count = Object.keys(this._killData.players || {}).length;
+          console.log(`[${this._label}] Loaded ${count} player(s) from kill-tracker.json`);
+        }
+      }
+      if (raw) {
         // Migrate old records: add missing fields
         for (const record of Object.values(this._killData.players)) {
           if (!record.survivalCumulative) record.survivalCumulative = PlayerStatsChannel._emptyObj(PlayerStatsChannel.SURVIVAL_KEYS);
           if (!record.survivalSnapshot) record.survivalSnapshot = PlayerStatsChannel._emptyObj(PlayerStatsChannel.SURVIVAL_KEYS);
-          // Death checkpoint: lifetime kills at the moment of last death
           if (!record.deathCheckpoint) record.deathCheckpoint = null;
           if (record.lastKnownDeaths === undefined) record.lastKnownDeaths = 0;
-          // Cached lifetime values for when player goes offline
           if (!record.lifetimeSnapshot) record.lifetimeSnapshot = null;
           if (!record.survivalLifetimeSnapshot) record.survivalLifetimeSnapshot = null;
-          // Last lifetime snapshot for delta computation
           if (!record.lastLifetimeSnapshot) record.lastLifetimeSnapshot = record.lifetimeSnapshot ? { ...record.lifetimeSnapshot } : null;
           if (!record.lastSurvivalLifetimeSnapshot) record.lastSurvivalLifetimeSnapshot = record.survivalLifetimeSnapshot ? { ...record.survivalLifetimeSnapshot } : null;
-          // Activity tracking snapshots (scalar + array diffs)
           if (!record.activitySnapshot) record.activitySnapshot = PlayerStatsChannel._emptyObj(PlayerStatsChannel.ACTIVITY_SCALAR_KEYS);
           if (!record.activityArraySnapshot) {
             record.activityArraySnapshot = {};
             for (const k of PlayerStatsChannel.ACTIVITY_ARRAY_KEYS) record.activityArraySnapshot[k] = [];
           }
-          // Challenge progress snapshot (for completion feed)
           if (!record.challengeSnapshot) record.challengeSnapshot = PlayerStatsChannel._emptyObj(PlayerStatsChannel.CHALLENGE_KEYS);
         }
       }
@@ -761,8 +796,12 @@ class PlayerStatsChannel {
   _saveKillData() {
     if (!this._killDirty) return;
     try {
-      if (!fs.existsSync(this._dataDir)) fs.mkdirSync(this._dataDir, { recursive: true });
-      fs.writeFileSync(path.join(this._dataDir, 'kill-tracker.json'), JSON.stringify(this._killData, null, 2), 'utf8');
+      if (this._db) {
+        this._db.setStateJSON('kill_tracker', this._killData);
+      } else {
+        if (!fs.existsSync(this._dataDir)) fs.mkdirSync(this._dataDir, { recursive: true });
+        fs.writeFileSync(path.join(this._dataDir, 'kill-tracker.json'), JSON.stringify(this._killData, null, 2), 'utf8');
+      }
       this._killDirty = false;
     } catch (err) {
       console.error(`[${this._label}] Failed to save kill tracker:`, err.message);

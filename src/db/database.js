@@ -725,6 +725,18 @@ class HumanitZDB {
         console.log(`[${this._label}] Migration v10→v11: expanded game_items, added 11 new reference tables`);
       }
 
+      // v11 → v12: bot_state key-value table for runtime operational state
+      if (fromVersion < 12) {
+        this._db.exec(`
+          CREATE TABLE IF NOT EXISTS bot_state (
+            key        TEXT PRIMARY KEY,
+            value      TEXT,
+            updated_at TEXT DEFAULT (datetime('now'))
+          );
+        `);
+        console.log(`[${this._label}] Migration v11→v12: bot_state table`);
+      }
+
       this._setMeta('schema_version', String(SCHEMA_VERSION));
       this._db.exec('COMMIT');
       console.log(`[${this._label}] Schema migrated to v${SCHEMA_VERSION}`);
@@ -754,6 +766,45 @@ class HumanitZDB {
 
   _setMeta(key, value) {
     this._db.prepare('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)').run(key, value);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  Bot State (key-value store for runtime operational state)
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /** Get a bot_state value by key. Returns null if not found. */
+  getState(key) {
+    const row = this._db.prepare('SELECT value FROM bot_state WHERE key = ?').get(key);
+    return row ? row.value : null;
+  }
+
+  /** Set a bot_state value. Creates or replaces. */
+  setState(key, value) {
+    this._db.prepare(
+      'INSERT OR REPLACE INTO bot_state (key, value, updated_at) VALUES (?, ?, datetime(\'now\'))'
+    ).run(key, value != null ? String(value) : null);
+  }
+
+  /** Get a bot_state value parsed as JSON. Returns defaultVal if not found or parse fails. */
+  getStateJSON(key, defaultVal = null) {
+    const raw = this.getState(key);
+    if (raw == null) return defaultVal;
+    try { return JSON.parse(raw); } catch { return defaultVal; }
+  }
+
+  /** Set a bot_state value as JSON. */
+  setStateJSON(key, value) {
+    this.setState(key, JSON.stringify(value));
+  }
+
+  /** Delete a bot_state key. */
+  deleteState(key) {
+    this._db.prepare('DELETE FROM bot_state WHERE key = ?').run(key);
+  }
+
+  /** Get all bot_state entries. Returns array of { key, value, updated_at }. */
+  getAllState() {
+    return this._db.prepare('SELECT key, value, updated_at FROM bot_state ORDER BY key').all();
   }
 
   // ═══════════════════════════════════════════════════════════════════════════

@@ -317,12 +317,24 @@ client.once(Events.ClientReady, async (readyClient) => {
   //    Forces each module to re-create its embed from scratch.
   if (config.firstRun) {
     const dataDir = path.join(__dirname, '..', 'data');
+    // Clear bot_state keys that hold transient/session data
+    if (db) {
+      const transientKeys = [
+        'msg_id_server_status', 'msg_id_player_stats', 'msg_id_panel_bot', 'msg_id_panel_server',
+        'msg_id_panel_servers', 'log_offsets', 'day_counts', 'pvp_kills', 'welcome_stats',
+        'bot_running',
+      ];
+      for (const key of transientKeys) {
+        try { db.deleteState(key); } catch (_) {}
+      }
+      console.log('[BOT] Cleared bot_state transient keys (FIRST_RUN)');
+    }
+    // Also clear legacy JSON files
     const msgIdFile = path.join(dataDir, 'message-ids.json');
     if (fs.existsSync(msgIdFile)) {
       fs.unlinkSync(msgIdFile);
       console.log('[BOT] Cleared message-ids.json (FIRST_RUN)');
     }
-    // Clear transient data files so stale state doesn't persist
     const transientFiles = ['log-offsets.json', 'day-counts.json', 'pvp-kills.json', 'welcome-stats.json'];
     for (const f of transientFiles) {
       const fp = path.join(dataDir, f);
@@ -415,7 +427,7 @@ client.once(Events.ClientReady, async (readyClient) => {
       setStatus('Server Status', '🟡 Skipped (SERVER_STATUS_CHANNEL_ID not set)');
       console.log('[BOT] Server status skipped — SERVER_STATUS_CHANNEL_ID not configured');
     } else {
-      serverStatus = new ServerStatus(readyClient);
+      serverStatus = new ServerStatus(readyClient, { db });
       await serverStatus.start();
       setStatus('Server Status', '🟢 Active');
     }
@@ -593,7 +605,7 @@ client.once(Events.ClientReady, async (readyClient) => {
       setStatus('Player Stats', '🟡 Skipped (PLAYER_STATS_CHANNEL_ID not set)');
       console.log('[BOT] Player stats skipped — PLAYER_STATS_CHANNEL_ID not configured');
     } else {
-      playerStatsChannel = new PlayerStatsChannel(readyClient, logWatcher);
+      playerStatsChannel = new PlayerStatsChannel(readyClient, logWatcher, { db });
       await playerStatsChannel.start();
       setStatus('Player Stats', '🟢 Active');
       if (!logWatcher) {
@@ -690,17 +702,16 @@ client.once(Events.ClientReady, async (readyClient) => {
   }
 
   // ── Post online notification to admin channel ──
-  const SHUTDOWN_FLAG = path.join(__dirname, '..', 'data', 'bot-running.flag');
   try {
     if (config.adminChannelId) {
       adminChannel = await readyClient.channels.fetch(config.adminChannelId);
     }
 
-    // Detect unclean shutdown: if the flag file exists from a previous run,
+    // Detect unclean shutdown: if the flag exists from a previous run,
     // the bot crashed or was killed without running the shutdown handler.
-    if (adminChannel && fs.existsSync(SHUTDOWN_FLAG)) {
+    const flagData = db ? db.getStateJSON('bot_running', null) : null;
+    if (adminChannel && flagData) {
       try {
-        const flagData = JSON.parse(fs.readFileSync(SHUTDOWN_FLAG, 'utf8'));
         const lastStarted = flagData.startedAt ? new Date(flagData.startedAt) : null;
         const uptime = lastStarted ? _formatUptime(Date.now() - lastStarted.getTime()) : 'unknown';
         const offlineEmbed = new EmbedBuilder()
@@ -714,10 +725,10 @@ client.once(Events.ClientReady, async (readyClient) => {
         await adminChannel.send({ embeds: [offlineEmbed] }).catch(() => {});
       } catch (_) { /* ignore parse errors */ }
     }
-    // Write flag file — removed on clean shutdown
-    try {
-      fs.writeFileSync(SHUTDOWN_FLAG, JSON.stringify({ startedAt: startedAt.toISOString() }));
-    } catch (_) {}
+    // Write flag — removed on clean shutdown
+    if (db) {
+      try { db.setStateJSON('bot_running', { startedAt: startedAt.toISOString() }); } catch (_) {}
+    }
 
     // Build status lines grouped by state
     const active   = [];
@@ -908,11 +919,11 @@ async function shutdown(reason = 'Manual shutdown') {
   if (multiServerManager) await multiServerManager.stopAll();
   playerStats.stop();
   playtime.stop();
+
+  // Remove running flag — signals clean shutdown (must happen before db.close())
+  if (db) { try { db.deleteState('bot_running'); } catch (_) {} }
   if (db) db.close();
   await rcon.disconnect();
-
-  // Remove running flag — signals clean shutdown
-  try { fs.unlinkSync(path.join(__dirname, '..', 'data', 'bot-running.flag')); } catch (_) {}
 
   client.destroy();
   process.exit(0);
@@ -1033,7 +1044,7 @@ async function _nukeChannel(client, channelId, botId) {
     // Wipe all transient data files (preserves map-calibration.json)
     const filesToWipe = [
       'message-ids.json', 'player-stats.json', 'playtime.json',
-      'welcome-stats.json', 'server-settings.json', 'bot-running.flag',
+      'welcome-stats.json', 'server-settings.json',
       'log-offsets.json', 'day-counts.json', 'pvp-kills.json',
       'humanitz.db', 'humanitz.db-wal', 'humanitz.db-shm',
       'kill-tracker.json', 'player-locations.json', 'map-image.png',

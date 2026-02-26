@@ -7,16 +7,11 @@ const assert = require('node:assert/strict');
 
 const { _parseIni, _cleanItemName, _resolveUdsWeather } = require('../src/player-stats-channel');
 
-// Clean up singleton timers that keep the process alive.
+// Clean up singleton references after tests.
 // Requiring player-stats-channel pulls in both player-stats and playtime-tracker
-// singletons. Any test that triggers _ensureInit() (e.g. _snapshotPlayerStats)
-// starts 60-second setIntervals on both — clear them so the process can exit.
+// singletons. No timers to clean up since DB-first migration removed JSON auto-save.
 after(() => {
-  const playtime = require('../src/playtime-tracker');
-  if (playtime._saveTimer) { clearInterval(playtime._saveTimer); playtime._saveTimer = null; }
-
-  const pStats = require('../src/player-stats');
-  if (pStats._saveTimer) { clearInterval(pStats._saveTimer); pStats._saveTimer = null; }
+  // no-op — kept for future cleanup hooks if needed
 });
 
 // ══════════════════════════════════════════════════════════

@@ -121,6 +121,7 @@ class ServerStatus {
     this._getServerInfo = deps.getServerInfo || require('./server-info').getServerInfo;
     this._getPlayerList = deps.getPlayerList || require('./server-info').getPlayerList;
     this._sendAdminMessage = deps.sendAdminMessage || require('./server-info').sendAdminMessage;
+    this._db = deps.db || null;
     this._label = deps.label || 'STATUS';
     this._dataDir = deps.dataDir || _DEFAULT_DATA_DIR;
 
@@ -226,6 +227,9 @@ class ServerStatus {
 
   _loadMessageId() {
     try {
+      if (this._db) {
+        return this._db.getState('msg_id_server_status') || null;
+      }
       const fp = path.join(this._dataDir, 'message-ids.json');
       if (fs.existsSync(fp)) {
         const data = JSON.parse(fs.readFileSync(fp, 'utf8'));
@@ -237,11 +241,15 @@ class ServerStatus {
   _saveMessageId() {
     if (!this.statusMessage) return;
     try {
-      const fp = path.join(this._dataDir, 'message-ids.json');
-      let data = {};
-      try { if (fs.existsSync(fp)) data = JSON.parse(fs.readFileSync(fp, 'utf8')); } catch {}
-      data.serverStatus = this.statusMessage.id;
-      fs.writeFileSync(fp, JSON.stringify(data, null, 2));
+      if (this._db) {
+        this._db.setState('msg_id_server_status', this.statusMessage.id);
+      } else {
+        const fp = path.join(this._dataDir, 'message-ids.json');
+        let data = {};
+        try { if (fs.existsSync(fp)) data = JSON.parse(fs.readFileSync(fp, 'utf8')); } catch {}
+        data.serverStatus = this.statusMessage.id;
+        fs.writeFileSync(fp, JSON.stringify(data, null, 2));
+      }
     } catch {}
   }
 
@@ -372,11 +380,15 @@ class ServerStatus {
 
   _loadServerSettings() {
     try {
+      if (this._db) {
+        const data = this._db.getStateJSON('server_settings', null);
+        if (data) return data;
+        return {};
+      }
       const settingsFile = path.join(this._dataDir, 'server-settings.json');
       if (fs.existsSync(settingsFile)) {
         const stat = fs.statSync(settingsFile);
         const mtime = stat.mtimeMs;
-        // Return cached copy if file hasn't been modified
         if (this._settingsCache && this._settingsCacheMtime === mtime) {
           return this._settingsCache;
         }
