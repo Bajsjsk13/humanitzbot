@@ -604,20 +604,21 @@ client.once(Events.ClientReady, async (readyClient) => {
     setStatus('Activity Log', '⚫ Disabled');
   }
 
-  // Player Stats — save-file parsing with full stats embed
+  // Player Stats — DB-first reads (SaveService populates DB, PSC reads it)
   if (config.enablePlayerStats) {
-    if (!hasFtp()) {
-      setStatus('Player Stats', '🟡 Skipped (FTP credentials not set)');
-      console.log('[BOT] Player stats skipped — FTP_HOST/FTP_USER/FTP_PASSWORD not configured');
+    if (!hasFtp() && !db) {
+      setStatus('Player Stats', '🟡 Skipped (no FTP credentials or database)');
+      console.log('[BOT] Player stats skipped — no FTP credentials or database available');
     } else if (!config.playerStatsChannelId) {
       setStatus('Player Stats', '🟡 Skipped (PLAYER_STATS_CHANNEL_ID not set)');
       console.log('[BOT] Player stats skipped — PLAYER_STATS_CHANNEL_ID not configured');
     } else {
       playerStatsChannel = new PlayerStatsChannel(readyClient, logWatcher, { db });
       await playerStatsChannel.start();
-      setStatus('Player Stats', '🟢 Active');
+      const mode = db ? 'DB-first' : 'SFTP legacy';
+      setStatus('Player Stats', `🟢 Active (${mode})`);
       if (!logWatcher) {
-        setStatus('Player Stats', '🟢 Active (kill/survival feed unavailable — Log Watcher off)');
+        setStatus('Player Stats', `🟢 Active (${mode}, kill/survival feed unavailable — Log Watcher off)`);
       }
     }
   } else {

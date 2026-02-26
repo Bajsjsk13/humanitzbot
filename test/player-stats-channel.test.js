@@ -5,7 +5,7 @@
 const { describe, it, after } = require('node:test');
 const assert = require('node:assert/strict');
 
-const { _parseIni, _cleanItemName, _resolveUdsWeather } = require('../src/modules/player-stats-channel');
+const { _parseIni, _cleanItemName, _resolveUdsWeather, _dbRowToSave } = require('../src/modules/player-stats-channel');
 
 // Clean up singleton references after tests.
 // Requiring player-stats-channel pulls in both player-stats and playtime-tracker
@@ -289,5 +289,150 @@ describe('Challenge tracking', () => {
     assert.equal(snap.challengeCraftFurnace, 0);
     // Missing keys default to 0
     assert.equal(snap.challengeRepairRadio, 0);
+  });
+});
+
+// ══════════════════════════════════════════════════════════
+// _dbRowToSave — DB snake_case → camelCase save format
+// ══════════════════════════════════════════════════════════
+
+describe('_dbRowToSave', () => {
+  it('returns null for null input', () => {
+    assert.equal(_dbRowToSave(null), null);
+  });
+
+  it('converts kill stats from snake_case to camelCase', () => {
+    const row = {
+      steam_id: '76561198000000001',
+      name: 'TestPlayer',
+      zeeks_killed: 100,
+      headshots: 50,
+      melee_kills: 30,
+      gun_kills: 40,
+      blast_kills: 5,
+      fist_kills: 2,
+      takedown_kills: 8,
+      vehicle_kills: 3,
+    };
+    const save = _dbRowToSave(row);
+    assert.equal(save.zeeksKilled, 100);
+    assert.equal(save.headshots, 50);
+    assert.equal(save.meleeKills, 30);
+    assert.equal(save.gunKills, 40);
+    assert.equal(save.blastKills, 5);
+    assert.equal(save.fistKills, 2);
+    assert.equal(save.takedownKills, 8);
+    assert.equal(save.vehicleKills, 3);
+  });
+
+  it('converts lifetime stats correctly', () => {
+    const row = {
+      lifetime_kills: 500,
+      lifetime_headshots: 200,
+      lifetime_melee_kills: 150,
+      lifetime_gun_kills: 250,
+      lifetime_blast_kills: 10,
+      lifetime_fist_kills: 5,
+      lifetime_takedown_kills: 20,
+      lifetime_vehicle_kills: 15,
+      lifetime_days_survived: 45,
+      has_extended_stats: true,
+    };
+    const save = _dbRowToSave(row);
+    assert.equal(save.lifetimeKills, 500);
+    assert.equal(save.lifetimeHeadshots, 200);
+    assert.equal(save.lifetimeDaysSurvived, 45);
+    assert.equal(save.hasExtendedStats, true);
+  });
+
+  it('converts vitals and position', () => {
+    const row = {
+      health: 85, max_health: 100,
+      hunger: 60, max_hunger: 100,
+      thirst: 40, max_thirst: 100,
+      stamina: 90, max_stamina: 100,
+      infection: 75, max_infection: 100,
+      battery: 50, fatigue: 0.3,
+      infection_buildup: 10,
+      pos_x: 1000, pos_y: 2000, pos_z: 300,
+      rotation_yaw: 45,
+    };
+    const save = _dbRowToSave(row);
+    assert.equal(save.health, 85);
+    assert.equal(save.maxHealth, 100);
+    assert.equal(save.hunger, 60);
+    assert.equal(save.stamina, 90);
+    assert.equal(save.infection, 75);
+    assert.equal(save.battery, 50);
+    assert.equal(save.fatigue, 0.3);
+    assert.equal(save.infectionBuildup, 10);
+    assert.equal(save.x, 1000);
+    assert.equal(save.y, 2000);
+    assert.equal(save.z, 300);
+    assert.equal(save.rotationYaw, 45);
+  });
+
+  it('converts JSON array columns with null fallback', () => {
+    const row = {
+      crafting_recipes: ['Recipe1', 'Recipe2'],
+      building_recipes: null,
+      unlocked_skills: ['Skill1'],
+      inventory: [],
+      equipment: [{ item: 'Axe', amount: 1 }],
+      companion_data: null,
+      horses: null,
+    };
+    const save = _dbRowToSave(row);
+    assert.deepEqual(save.craftingRecipes, ['Recipe1', 'Recipe2']);
+    assert.deepEqual(save.buildingRecipes, []);
+    assert.deepEqual(save.unlockedSkills, ['Skill1']);
+    assert.deepEqual(save.inventory, []);
+    assert.deepEqual(save.equipment, [{ item: 'Axe', amount: 1 }]);
+    assert.deepEqual(save.companionData, []);
+    assert.deepEqual(save.horses, []);
+  });
+
+  it('converts challenge fields', () => {
+    const row = {
+      challenge_kill_zombies: 100,
+      challenge_kill_50: 50,
+      challenge_catch_20_fish: 20,
+      challenge_find_dog: 1,
+      challenge_repair_radio: 0,
+      challenge_9_squares: 5,
+      challenge_lockpick_suv: 1,
+    };
+    const save = _dbRowToSave(row);
+    assert.equal(save.challengeKillZombies, 100);
+    assert.equal(save.challengeKill50, 50);
+    assert.equal(save.challengeCatch20Fish, 20);
+    assert.equal(save.challengeFindDog, 1);
+    assert.equal(save.challengeRepairRadio, 0);
+    assert.equal(save.challenge9Squares, 5);
+    assert.equal(save.challengeLockpickSUV, 1);
+  });
+
+  it('converts activity fields', () => {
+    const row = {
+      days_survived: 12,
+      times_bitten: 5,
+      fish_caught: 15,
+      fish_caught_pike: 3,
+      exp: 12500,
+      level: 8,
+      starting_perk: 'Carpenter',
+      affliction: 2,
+      male: true,
+    };
+    const save = _dbRowToSave(row);
+    assert.equal(save.daysSurvived, 12);
+    assert.equal(save.timesBitten, 5);
+    assert.equal(save.fishCaught, 15);
+    assert.equal(save.fishCaughtPike, 3);
+    assert.equal(save.exp, 12500);
+    assert.equal(save.level, 8);
+    assert.equal(save.startingPerk, 'Carpenter');
+    assert.equal(save.affliction, 2);
+    assert.equal(save.male, true);
   });
 });

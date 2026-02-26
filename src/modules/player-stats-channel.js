@@ -11,6 +11,121 @@ const gameData = require('../parsers/game-data');
 const { cleanItemName: _sharedCleanItemName, cleanItemArray, isHexGuid } = require('../parsers/ue4-names');
 const os = require('os');
 
+/**
+ * Convert a DB player row (snake_case, from _parsePlayerRow) to camelCase
+ * save-data format matching parseSave() output.  This allows all embed
+ * builders and the kill tracker to work unchanged after the DB-first switch.
+ */
+function _dbRowToSave(row) {
+  if (!row) return null;
+  return {
+    name:               row.name,
+    male:               row.male,
+    startingPerk:       row.starting_perk,
+    affliction:         row.affliction,
+    charProfile:        row.char_profile,
+    zeeksKilled:        row.zeeks_killed,
+    headshots:          row.headshots,
+    meleeKills:         row.melee_kills,
+    gunKills:           row.gun_kills,
+    blastKills:         row.blast_kills,
+    fistKills:          row.fist_kills,
+    takedownKills:      row.takedown_kills,
+    vehicleKills:       row.vehicle_kills,
+    lifetimeKills:      row.lifetime_kills,
+    lifetimeHeadshots:  row.lifetime_headshots,
+    lifetimeMeleeKills: row.lifetime_melee_kills,
+    lifetimeGunKills:   row.lifetime_gun_kills,
+    lifetimeBlastKills: row.lifetime_blast_kills,
+    lifetimeFistKills:  row.lifetime_fist_kills,
+    lifetimeTakedownKills: row.lifetime_takedown_kills,
+    lifetimeVehicleKills: row.lifetime_vehicle_kills,
+    lifetimeDaysSurvived: row.lifetime_days_survived,
+    hasExtendedStats:   row.has_extended_stats,
+    daysSurvived:       row.days_survived,
+    timesBitten:        row.times_bitten,
+    bites:              row.bites,
+    fishCaught:         row.fish_caught,
+    fishCaughtPike:     row.fish_caught_pike,
+    health:             row.health,
+    maxHealth:          row.max_health,
+    hunger:             row.hunger,
+    maxHunger:          row.max_hunger,
+    thirst:             row.thirst,
+    maxThirst:          row.max_thirst,
+    stamina:            row.stamina,
+    maxStamina:         row.max_stamina,
+    infection:          row.infection,
+    maxInfection:       row.max_infection,
+    battery:            row.battery,
+    fatigue:            row.fatigue,
+    infectionBuildup:   row.infection_buildup,
+    wellRested:         row.well_rested,
+    energy:             row.energy,
+    hood:               row.hood,
+    hypoHandle:         row.hypo_handle,
+    exp:                row.exp,
+    level:              row.level,
+    expCurrent:         row.exp_current,
+    expRequired:        row.exp_required,
+    skillPoints:        row.skills_point,
+    x:                  row.pos_x,
+    y:                  row.pos_y,
+    z:                  row.pos_z,
+    rotationYaw:        row.rotation_yaw,
+    respawnX:           row.respawn_x,
+    respawnY:           row.respawn_y,
+    respawnZ:           row.respawn_z,
+    cbRadioCooldown:    row.cb_radio_cooldown,
+    dayIncremented:     row.day_incremented,
+    infectionTimer:     row.infection_timer,
+    playerStates:       row.player_states || [],
+    bodyConditions:     row.body_conditions || [],
+    craftingRecipes:    row.crafting_recipes || [],
+    buildingRecipes:    row.building_recipes || [],
+    unlockedProfessions: row.unlocked_professions || [],
+    unlockedSkills:     row.unlocked_skills || [],
+    skillTree:          row.skills_data,
+    skillsData:         row.skills_data,
+    inventory:          row.inventory || [],
+    equipment:          row.equipment || [],
+    quickSlots:         row.quick_slots || [],
+    backpackItems:      row.backpack_items || [],
+    backpackData:       row.backpack_data,
+    lore:               row.lore || [],
+    uniqueLoots:        row.unique_loots || [],
+    craftedUniques:     row.crafted_uniques || [],
+    lootItemUnique:     row.loot_item_unique || [],
+    questData:          row.quest_data,
+    miniQuest:          row.mini_quest,
+    challenges:         row.challenges,
+    questSpawnerDone:   row.quest_spawner_done,
+    companionData:      row.companion_data || [],
+    horses:             row.horses || [],
+    extendedStats:      row.extended_stats,
+    challengeKillZombies:     row.challenge_kill_zombies,
+    challengeKill50:          row.challenge_kill_50,
+    challengeCatch20Fish:     row.challenge_catch_20_fish,
+    challengeRegularAngler:   row.challenge_regular_angler,
+    challengeKillZombieBear:  row.challenge_kill_zombie_bear,
+    challenge9Squares:        row.challenge_9_squares,
+    challengeCraftFirearm:    row.challenge_craft_firearm,
+    challengeCraftFurnace:    row.challenge_craft_furnace,
+    challengeCraftMeleeBench: row.challenge_craft_melee_bench,
+    challengeCraftMeleeWeapon: row.challenge_craft_melee_weapon,
+    challengeCraftRainCollector: row.challenge_craft_rain_collector,
+    challengeCraftTablesaw:   row.challenge_craft_tablesaw,
+    challengeCraftTreatment:  row.challenge_craft_treatment,
+    challengeCraftWeaponsBench: row.challenge_craft_weapons_bench,
+    challengeCraftWorkbench:  row.challenge_craft_workbench,
+    challengeFindDog:         row.challenge_find_dog,
+    challengeFindHeli:        row.challenge_find_heli,
+    challengeLockpickSUV:     row.challenge_lockpick_suv,
+    challengeRepairRadio:     row.challenge_repair_radio,
+    customData:         row.custom_data,
+  };
+}
+
 const _DEFAULT_DATA_DIR = path.join(__dirname, '..', '..', 'data');
 
 class PlayerStatsChannel {
@@ -138,13 +253,185 @@ class PlayerStatsChannel {
   }
 
   async _pollSave() {
-    if (!this._config.ftpHost || this._config.ftpHost.startsWith('PASTE_')) return;
+    // ── DB-first: read player/world/clan data from SQLite ──
+    // SaveService populates these tables on its own SFTP poll cycle.
+    // PSC no longer downloads or parses the save file itself.
+    const dbLoaded = this._loadFromDb();
 
+    if (!dbLoaded) {
+      // DB has no player data yet (SaveService hasn't run, or DB not available).
+      // Fall back to legacy SFTP download if credentials exist.
+      if (this._config.ftpHost && !this._config.ftpHost.startsWith('PASTE_')) {
+        await this._pollSaveLegacy();
+        return;
+      }
+      console.log(`[${this._label}] No save data in DB and no SFTP credentials — skipping poll`);
+      return;
+    }
+
+    // ── SFTP side-channel: server settings, ID map, welcome file ──
+    // These are lightweight operations that don't download the 60MB save.
+    if (this._config.ftpHost && !this._config.ftpHost.startsWith('PASTE_')) {
+      const sftp = new SftpClient();
+      try {
+        await sftp.connect(this._config.sftpConnectConfig());
+
+        // Refresh PlayerIDMapped.txt → PlayerStats name resolution
+        await this._refreshIdMap(sftp);
+
+        // Fetch + cache server settings INI
+        await this._fetchServerSettings(sftp);
+
+        // Upload welcome file if enabled
+        if (this._config.enableWelcomeFile) {
+          try {
+            const content = await buildWelcomeContent({
+              config: this._config,
+              playtime: this._playtime,
+              playerStats: this._playerStats,
+              dataDir: this._dataDir,
+              db: this._db,
+            });
+            await sftp.put(Buffer.from(content, 'utf8'), this._config.ftpWelcomePath);
+            console.log(`[${this._label}] Updated WelcomeMessage.txt on server`);
+          } catch (err) {
+            console.error(`[${this._label}] Failed to write WelcomeMessage.txt:`, err.message);
+          }
+        }
+      } catch (err) {
+        console.error(`[${this._label}] SFTP side-channel error:`, err.message);
+      } finally {
+        await sftp.end().catch(() => {});
+      }
+    } else {
+      // No SFTP — load cached server settings from DB
+      this._loadCachedServerSettings();
+    }
+
+    // Cache leaderboard data for WelcomeMessage.txt
+    this._cacheWelcomeStats();
+  }
+
+  /**
+   * Load player, world, and clan data from the DB (populated by SaveService).
+   * Populates this._saveData, this._worldState, this._clanData, entity arrays.
+   * Returns true if data was loaded, false if DB has no players.
+   */
+  _loadFromDb() {
+    if (!this._db) return false;
+    try {
+      const dbPlayers = this._db.getAllPlayers();
+      if (!dbPlayers || dbPlayers.length === 0) return false;
+
+      // Convert DB rows (snake_case) → save format (camelCase)
+      const players = new Map();
+      for (const row of dbPlayers) {
+        players.set(row.steam_id, _dbRowToSave(row));
+      }
+
+      const prevWorldState = this._worldState || null;
+      this._saveData = players;
+      this._lastSaveUpdate = new Date();
+
+      // World state from DB
+      this._worldState = this._db.getAllWorldState() || {};
+
+      // Clan data from DB
+      try {
+        this._clanData = this._db.getAllClans() || [];
+      } catch (err) {
+        console.error(`[${this._label}] Clan DB read error:`, err.message);
+      }
+
+      console.log(`[${this._label}] DB-first load: ${players.size} players`);
+
+      // Accumulate lifetime stats across deaths (kills + survival + activity)
+      this._accumulateStats();
+
+      // Detect world state changes (season, day milestones, airdrops)
+      if (prevWorldState && this._config.enableWorldEventFeed && this._logWatcher) {
+        this._detectWorldEvents(prevWorldState, this._worldState);
+      }
+
+      return true;
+    } catch (err) {
+      console.error(`[${this._label}] DB load error:`, err.message);
+      return false;
+    }
+  }
+
+  /**
+   * Fetch server settings INI via SFTP, enrich with world state, and cache to DB.
+   */
+  async _fetchServerSettings(sftp) {
+    try {
+      const settingsPath = this._config.ftpSettingsPath || '/HumanitZServer/GameServerSettings.ini';
+      const settingsBuf = await sftp.get(settingsPath);
+      const settingsText = settingsBuf.toString('utf8');
+      this._serverSettings = _parseIni(settingsText);
+      this._enrichServerSettings();
+      // Cache to DB
+      try {
+        if (this._db) this._db.setStateJSON('server_settings', this._serverSettings);
+      } catch (_) {}
+      console.log(`[${this._label}] Parsed server settings: ${Object.keys(this._serverSettings).length} keys`);
+    } catch (err) {
+      this._loadCachedServerSettings();
+      if (!err.message.includes('No such file')) {
+        console.error(`[${this._label}] Server settings error:`, err.message);
+      }
+    }
+  }
+
+  /**
+   * Inject world state values into server settings for ServerStatus consumption.
+   */
+  _enrichServerSettings() {
+    if (!this._worldState) return;
+    const ws = this._worldState;
+    if (ws.daysPassed != null) this._serverSettings._daysPassed = ws.daysPassed;
+    if (ws.currentSeason) this._serverSettings._currentSeason = ws.currentSeason;
+    if (ws.currentSeasonDay != null) this._serverSettings._currentSeasonDay = ws.currentSeasonDay;
+    if (ws.totalStructures != null) this._serverSettings._totalStructures = ws.totalStructures;
+    if (ws.totalVehicles != null) this._serverSettings._totalVehicles = ws.totalVehicles;
+    if (ws.totalCompanions != null) this._serverSettings._totalCompanions = ws.totalCompanions;
+    if (ws.totalPlayers != null) this._serverSettings._totalPlayers = ws.totalPlayers;
+    // Extract weather from UDS weather state stored in save
+    if (Array.isArray(ws.weatherState)) {
+      const weatherProp = ws.weatherState.find(p => p.name === 'CurrentWeather');
+      if (weatherProp && typeof weatherProp.value === 'string') {
+        this._serverSettings._currentWeather = _resolveUdsWeather(weatherProp.value);
+      }
+    }
+    // Compute total zombie kills across all players from lifetime stats
+    let totalZombieKills = 0;
+    for (const [, p] of this._saveData) {
+      totalZombieKills += p.lifetimeKills || p.zeeksKilled || 0;
+    }
+    this._serverSettings._totalZombieKills = totalZombieKills;
+  }
+
+  /**
+   * Load cached server settings from DB fallback.
+   */
+  _loadCachedServerSettings() {
+    try {
+      if (this._db) {
+        const cached = this._db.getStateJSON('server_settings', null);
+        if (cached) this._serverSettings = cached;
+      }
+    } catch (_) {}
+  }
+
+  /**
+   * Legacy SFTP-based save polling — used only when DB has no data
+   * (SaveService hasn't synced yet). Once SaveService populates the DB,
+   * subsequent polls will use _loadFromDb() instead.
+   */
+  async _pollSaveLegacy() {
     const sftp = new SftpClient();
     try {
       await sftp.connect(this._config.sftpConnectConfig());
-
-      // Load PlayerIDMapped.txt early so names resolve on first embed
       await this._refreshIdMap(sftp);
 
       const buf = await this._downloadSave(sftp);
@@ -157,20 +444,17 @@ class PlayerStatsChannel {
       this._companions = companions || [];
       this._lastSaveUpdate = new Date();
 
-      // Track world state changes (season, day, airdrop)
       const prevWorldState = this._worldState || null;
       this._worldState = worldState || {};
-      console.log(`[${this._label}] Parsed save: ${players.size} players (${(buf.length / 1024 / 1024).toFixed(1)}MB)`);
+      console.log(`[${this._label}] Legacy parse: ${players.size} players (${(buf.length / 1024 / 1024).toFixed(1)}MB)`);
 
-      // Accumulate lifetime stats across deaths (kills + survival + activity)
       this._accumulateStats();
 
-      // Detect world state changes (season, day milestones, airdrops)
       if (prevWorldState && this._config.enableWorldEventFeed && this._logWatcher) {
         this._detectWorldEvents(prevWorldState, this._worldState);
       }
 
-      // Parse clan data (separate small file)
+      // Clan data
       try {
         const clanPath = this._config.ftpSavePath.replace(/SaveList\/.*$/, 'Save_ClanData.sav');
         const clanBuf = await sftp.get(clanPath);
@@ -182,62 +466,13 @@ class PlayerStatsChannel {
         }
       }
 
-      // Fetch server settings (INI file)
-      try {
-        const settingsPath = this._config.ftpSettingsPath || '/HumanitZServer/GameServerSettings.ini';
-        const settingsBuf = await sftp.get(settingsPath);
-        const settingsText = settingsBuf.toString('utf8');
-        this._serverSettings = _parseIni(settingsText);
-        // Inject world state from save file so server-status can use it as fallback
-        if (this._worldState) {
-          if (this._worldState.daysPassed != null) this._serverSettings._daysPassed = this._worldState.daysPassed;
-          if (this._worldState.currentSeason) this._serverSettings._currentSeason = this._worldState.currentSeason;
-          if (this._worldState.currentSeasonDay != null) this._serverSettings._currentSeasonDay = this._worldState.currentSeasonDay;
-          if (this._worldState.totalStructures != null) this._serverSettings._totalStructures = this._worldState.totalStructures;
-          if (this._worldState.totalVehicles != null) this._serverSettings._totalVehicles = this._worldState.totalVehicles;
-          if (this._worldState.totalCompanions != null) this._serverSettings._totalCompanions = this._worldState.totalCompanions;
-          if (this._worldState.totalPlayers != null) this._serverSettings._totalPlayers = this._worldState.totalPlayers;
-          // Extract weather from UDS weather state stored in save
-          if (Array.isArray(this._worldState.weatherState)) {
-            const weatherProp = this._worldState.weatherState.find(p => p.name === 'CurrentWeather');
-            if (weatherProp && typeof weatherProp.value === 'string') {
-              this._serverSettings._currentWeather = _resolveUdsWeather(weatherProp.value);
-            }
-          }
-          // Compute total zombie kills across all players from lifetime stats
-          let totalZombieKills = 0;
-          for (const [, p] of this._saveData) {
-            totalZombieKills += p.lifetimeKills || p.zeeksKilled || 0;
-          }
-          this._serverSettings._totalZombieKills = totalZombieKills;
-        }
-        // Cache to DB (primary) and disk (for modules without DB access)
-        try {
-          if (this._db) this._db.setStateJSON('server_settings', this._serverSettings);
-          fs.writeFileSync(path.join(this._dataDir, 'server-settings.json'), JSON.stringify(this._serverSettings, null, 2));
-        } catch (_) {}
-        console.log(`[${this._label}] Parsed server settings: ${Object.keys(this._serverSettings).length} keys`);
-      } catch (err) {
-        // Try loading cached settings
-        try {
-          if (this._db) {
-            const cached = this._db.getStateJSON('server_settings', null);
-            if (cached) this._serverSettings = cached;
-          } else {
-            const _settingsFile = path.join(this._dataDir, 'server-settings.json');
-            if (fs.existsSync(_settingsFile)) {
-              this._serverSettings = JSON.parse(fs.readFileSync(_settingsFile, 'utf8'));
-            }
-          }
-        } catch (_) {}
-        if (!err.message.includes('No such file')) {
-          console.error(`[${this._label}] Server settings error:`, err.message);
-        }
-      }
-      // Cache leaderboard data for WelcomeMessage.txt
+      // Server settings
+      await this._fetchServerSettings(sftp);
+
+      // Cache leaderboard data
       this._cacheWelcomeStats();
 
-      // Write updated WelcomeMessage.txt to server (reuse open SFTP connection)
+      // Welcome file
       if (this._config.enableWelcomeFile) {
         try {
           const content = await buildWelcomeContent({
@@ -253,12 +488,8 @@ class PlayerStatsChannel {
           console.error(`[${this._label}] Failed to write WelcomeMessage.txt:`, err.message);
         }
       }
-
-      // Write parsed save data cache for web map
-      this._writeSaveCache();
-
     } catch (err) {
-      console.error(`[${this._label}] Save poll error:`, err.message);
+      console.error(`[${this._label}] Legacy save poll error:`, err.message);
     } finally {
       await sftp.end().catch(() => {});
     }
@@ -380,38 +611,8 @@ class PlayerStatsChannel {
         weekly,
       };
       if (this._db) this._db.setStateJSON('welcome_stats', cache);
-      fs.writeFileSync(path.join(this._dataDir, 'welcome-stats.json'), JSON.stringify(cache, null, 2));
     } catch (err) {
       console.error(`[${this._label}] Failed to cache welcome stats:`, err.message);
-    }
-  }
-
-  /**
-   * Write a compact save-data cache to disk for the web map.
-   * Contains player positions, vitals, inventory, kills, etc. —
-   * everything the web map needs without having to re-parse the .sav.
-   */
-  _writeSaveCache() {
-    if (!this._saveData || this._saveData.size === 0) return;
-    try {
-      const players = {};
-      for (const [steamId, data] of this._saveData) {
-        players[steamId] = data;
-      }
-      const cache = {
-        updatedAt: new Date().toISOString(),
-        playerCount: this._saveData.size,
-        worldState: this._worldState || {},
-        players,
-        structures: this._structures || [],
-        vehicles: this._vehicles || [],
-        horses: this._horses || [],
-        containers: this._containers || [],
-        companions: this._companions || [],
-      };
-      fs.writeFileSync(path.join(this._dataDir, 'save-cache.json'), JSON.stringify(cache));
-    } catch (err) {
-      console.error(`[${this._label}] Failed to write save cache:`, err.message);
     }
   }
 
@@ -428,11 +629,6 @@ class PlayerStatsChannel {
       if (this._db) {
         const saved = this._db.getStateJSON('weekly_baseline', null);
         if (saved) baseline = saved;
-      } else {
-        const _weeklyFile = path.join(this._dataDir, 'weekly-baseline.json');
-        if (fs.existsSync(_weeklyFile)) {
-          baseline = JSON.parse(fs.readFileSync(_weeklyFile, 'utf8'));
-        }
       }
     } catch (_) {}
 
@@ -447,11 +643,7 @@ class PlayerStatsChannel {
         baseline.players[id] = this._snapshotPlayerStats(id);
       }
       try {
-        if (this._db) {
-          this._db.setStateJSON('weekly_baseline', baseline);
-        } else {
-          fs.writeFileSync(path.join(this._dataDir, 'weekly-baseline.json'), JSON.stringify(baseline, null, 2));
-        }
+        if (this._db) this._db.setStateJSON('weekly_baseline', baseline);
         console.log(`[${this._label}] Weekly baseline reset`);
       } catch (err) {
         console.error(`[${this._label}] Failed to write weekly baseline:`, err.message);
@@ -655,29 +847,14 @@ class PlayerStatsChannel {
 
   _loadMessageId() {
     try {
-      if (this._db) {
-        return this._db.getState('msg_id_player_stats') || null;
-      }
-      const fp = path.join(this._dataDir, 'message-ids.json');
-      if (fs.existsSync(fp)) {
-        const data = JSON.parse(fs.readFileSync(fp, 'utf8'));
-        return data.playerStats || null;
-      }
+      if (this._db) return this._db.getState('msg_id_player_stats') || null;
     } catch {} return null;
   }
 
   _saveMessageId() {
     if (!this.statusMessage) return;
     try {
-      if (this._db) {
-        this._db.setState('msg_id_player_stats', this.statusMessage.id);
-      } else {
-        const fp = path.join(this._dataDir, 'message-ids.json');
-        let data = {};
-        try { if (fs.existsSync(fp)) data = JSON.parse(fs.readFileSync(fp, 'utf8')); } catch {}
-        data.playerStats = this.statusMessage.id;
-        fs.writeFileSync(fp, JSON.stringify(data, null, 2));
-      }
+      if (this._db) this._db.setState('msg_id_player_stats', this.statusMessage.id);
     } catch {}
   }
 
@@ -700,8 +877,6 @@ class PlayerStatsChannel {
       }
       if (entries.length > 0) {
         this._playerStats.loadIdMap(entries);
-        // Cache locally for fast startup next time
-        try { fs.mkdirSync(path.join(this._dataDir, 'logs'), { recursive: true }); fs.writeFileSync(path.join(this._dataDir, 'logs', 'PlayerIDMapped.txt'), text); } catch (_) {}
         console.log(`[${this._label}] Loaded ${entries.length} name(s) from PlayerIDMapped.txt`);
       }
     } catch (err) {
@@ -759,14 +934,6 @@ class PlayerStatsChannel {
           const count = Object.keys(this._killData.players || {}).length;
           console.log(`[${this._label}] Loaded ${count} player(s) from kill tracker (DB)`);
         }
-      } else {
-        const _killFile = path.join(this._dataDir, 'kill-tracker.json');
-        if (fs.existsSync(_killFile)) {
-          raw = JSON.parse(fs.readFileSync(_killFile, 'utf8'));
-          this._killData = raw;
-          const count = Object.keys(this._killData.players || {}).length;
-          console.log(`[${this._label}] Loaded ${count} player(s) from kill-tracker.json`);
-        }
       }
       if (raw) {
         // Migrate old records: add missing fields
@@ -796,12 +963,7 @@ class PlayerStatsChannel {
   _saveKillData() {
     if (!this._killDirty) return;
     try {
-      if (this._db) {
-        this._db.setStateJSON('kill_tracker', this._killData);
-      } else {
-        if (!fs.existsSync(this._dataDir)) fs.mkdirSync(this._dataDir, { recursive: true });
-        fs.writeFileSync(path.join(this._dataDir, 'kill-tracker.json'), JSON.stringify(this._killData, null, 2), 'utf8');
-      }
+      if (this._db) this._db.setStateJSON('kill_tracker', this._killData);
       this._killDirty = false;
     } catch (err) {
       console.error(`[${this._label}] Failed to save kill tracker:`, err.message);
@@ -2353,3 +2515,4 @@ module.exports = PlayerStatsChannel;
 module.exports._parseIni = _parseIni;
 module.exports._cleanItemName = _cleanItemName;
 module.exports._resolveUdsWeather = _resolveUdsWeather;
+module.exports._dbRowToSave = _dbRowToSave;
