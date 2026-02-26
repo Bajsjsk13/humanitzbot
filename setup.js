@@ -1045,6 +1045,86 @@ function buildActivityEntries(hmzLog, connectedLog) {
 }
 
 /**
+ * Seed the SQLite database with player stats and playtime data.
+ * The bot loads from DB on startup (not JSON), so this ensures
+ * first-run imported data is available immediately.
+ */
+function seedDatabase(statsData, playtimeData) {
+  const HumanitZDB = require('./src/db/database');
+  const db = new HumanitZDB();
+  db.init();
+
+  try {
+    console.log('\n--- Seeding SQLite Database ---\n');
+
+    // Seed player log stats
+    let statsCount = 0;
+    for (const [id, record] of Object.entries(statsData.players)) {
+      // Skip orphaned name-keyed records (no real steam ID)
+      if (!id || id.startsWith('name:') || !/^\d{17}$/.test(id)) continue;
+      db.upsertFullLogStats(id, {
+        name: record.name || '',
+        deaths: record.deaths || 0,
+        pvpKills: record.pvpKills || 0,
+        pvpDeaths: record.pvpDeaths || 0,
+        builds: record.builds || 0,
+        containersLooted: record.containersLooted || 0,
+        damageTakenTotal: Object.values(record.damageTaken || {}).reduce((a, b) => a + b, 0),
+        raidsOut: record.raidsOut || 0,
+        raidsIn: record.raidsIn || 0,
+        connects: record.connects || 0,
+        disconnects: record.disconnects || 0,
+        adminAccess: record.adminAccess || 0,
+        destroyedOut: record.destroyedOut || 0,
+        destroyedIn: record.destroyedIn || 0,
+        buildItems: record.buildItems || {},
+        killedBy: record.killedBy || {},
+        damageTaken: record.damageTaken || {},
+        cheatFlags: record.cheatFlags || [],
+        lastEvent: record.lastEvent || null,
+      });
+      statsCount++;
+    }
+    console.log(`  Player log stats:   ${statsCount} player(s) seeded`);
+
+    // Seed playtime data
+    let playtimeCount = 0;
+    for (const [id, record] of Object.entries(playtimeData.players || {})) {
+      if (!/^\d{17}$/.test(id)) continue;
+      db.upsertFullPlaytime(id, {
+        name: record.name || '',
+        totalMs: record.totalMs || 0,
+        sessions: record.sessions || 0,
+        firstSeen: record.firstSeen || null,
+        lastLogin: record.lastLogin || null,
+        lastSeen: record.lastSeen || null,
+      });
+      playtimeCount++;
+    }
+    console.log(`  Player playtime:    ${playtimeCount} player(s) seeded`);
+
+    // Seed peak data
+    if (playtimeData.peaks) {
+      const p = playtimeData.peaks;
+      db.setServerPeak('all_time_peak', String(p.allTimePeak || 0));
+      db.setServerPeak('all_time_peak_date', p.allTimePeakDate || '');
+      db.setServerPeak('today_peak', String(p.todayPeak || 0));
+      db.setServerPeak('today_date', p.todayDate || '');
+      db.setServerPeak('unique_today', JSON.stringify(p.uniqueToday || []));
+      db.setServerPeak('unique_day_peak', String(p.uniqueDayPeak || 0));
+      db.setServerPeak('unique_day_peak_date', p.uniqueDayPeakDate || '');
+      db.setServerPeak('yesterday_unique', String(p.yesterdayUnique || 0));
+      db.setServerPeak('tracking_since', playtimeData.trackingSince || '');
+      console.log('  Server peaks:       seeded');
+    }
+
+    console.log('  Database seed complete!');
+  } finally {
+    db.close();
+  }
+}
+
+/**
  * Backfill activity_log table from parsed log files.
  * Opens the DB, clears existing activity entries, inserts all historical events.
  */
@@ -1237,6 +1317,9 @@ async function main() {
     }
     if (sorted.length > 10) console.log(`    ... and ${sorted.length - 10} more`);
   }
+
+  // Step 7b: Seed SQLite database (DB-first — bot loads from DB, not JSON)
+  seedDatabase(statsData, playtimeResult.playtimeData);
 
   // Summary
   console.log('\n--- Setup Complete ---\n');

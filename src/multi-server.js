@@ -21,6 +21,8 @@ const { PlaytimeTracker } = require('./playtime-tracker');
 const { getServerInfo, getPlayerList, sendAdminMessage } = require('./server-info');
 
 // Module classes
+const HumanitZDB = require('./db/database');
+const gameReference = require('./parsers/game-reference');
 const ServerStatus = require('./server-status');
 const StatusChannels = require('./status-channels');
 const ChatRelay = require('./chat-relay');
@@ -243,6 +245,17 @@ class ServerInstance {
 
     // Per-server singletons
     const label = this.name || this.id;
+
+    // Per-server SQLite database (isolated from primary)
+    this.db = new HumanitZDB({
+      dbPath: path.join(this.dataDir, 'humanitz.db'),
+      label: `DB:${label}`,
+    });
+    this.db.init();
+    try { gameReference.seed(this.db); } catch (err) {
+      console.warn(`[MULTI:${label}] Game reference seed failed:`, err.message);
+    }
+
     this.rcon = new RconManager({
       host: this.config.rconHost,
       port: this.config.rconPort,
@@ -252,18 +265,22 @@ class ServerInstance {
 
     this.playerStats = new PlayerStats({
       dataDir: this.dataDir,
+      db: this.db,
       playtime: null, // set after playtime is created
       label: `STATS:${label}`,
     });
 
     this.playtime = new PlaytimeTracker({
       dataDir: this.dataDir,
+      db: this.db,
       config: this.config,
       label: `PLAYTIME:${label}`,
     });
 
     // Wire up cross-reference
     this.playerStats._playtime = this.playtime;
+    this.playerStats.setDb(this.db);
+    this.playtime.setDb(this.db);
 
     // Bound server-info functions using this rcon
     this.getServerInfo = () => getServerInfo(this.rcon);
@@ -289,6 +306,7 @@ class ServerInstance {
       getServerInfo: this.getServerInfo,
       getPlayerList: this.getPlayerList,
       sendAdminMessage: this.sendAdminMessage,
+      db: this.db,
       dataDir: this.dataDir,
       serverId: this.id,
       label: this.name || this.id,
@@ -430,6 +448,12 @@ class ServerInstance {
     }
 
     this.running = true;
+
+    // Periodic flush of active playtime sessions to DB (crash protection)
+    this._playtimeFlushTimer = setInterval(() => {
+      try { this.playtime.flushActiveSessions(); } catch (_) {}
+    }, 60000);
+
     console.log(`[MULTI] Server "${label}" started with ${Object.keys(this._modules).length} module(s)`);
   }
 
@@ -452,8 +476,12 @@ class ServerInstance {
     } catch {}
 
     // Save data
+    if (this._playtimeFlushTimer) clearInterval(this._playtimeFlushTimer);
     try { this.playerStats.stop(); } catch {}
     try { this.playtime.stop(); } catch {}
+
+    // Close per-server DB
+    try { if (this.db) this.db.close(); } catch {}
 
     this.running = false;
   }

@@ -163,6 +163,7 @@ let multiServerManager;
 let webMapServer;  // Web map server instance
 let db;            // HumanitZDB instance
 let saveService;   // SaveService instance
+let playtimeFlushTimer; // periodic playtime → DB flush
 let snapshotService; // SnapshotService — timeline recording
 let activityLog;   // ActivityLog instance
 let adminChannel;  // cached for online/offline notifications
@@ -305,6 +306,11 @@ client.once(Events.ClientReady, async (readyClient) => {
   // Wire DB into singletons for unified identity + stats syncing
   playerStats.setDb(db);
   playtime.setDb(db);
+
+  // Periodic flush of active playtime sessions to DB (crash protection)
+  playtimeFlushTimer = setInterval(() => {
+    try { playtime.flushActiveSessions(); } catch (_) {}
+  }, 60000);
 
   // Generate/update the standalone agent script so it's always fresh
   try {
@@ -918,6 +924,7 @@ async function shutdown(reason = 'Manual shutdown') {
   if (saveService) saveService.stop();
   if (multiServerManager) await multiServerManager.stopAll();
   playerStats.stop();
+  if (playtimeFlushTimer) clearInterval(playtimeFlushTimer);
   playtime.stop();
 
   // Remove running flag — signals clean shutdown (must happen before db.close())
