@@ -146,7 +146,7 @@ Available commands:
     if (!this._db) { this._print('No database available.'); return; }
     const limit = parseInt(args[0], 10) || 20;
     const players = this._db.getAllPlayers();
-    const sorted = players.sort((a, b) => (b.lastSeen || '') > (a.lastSeen || '') ? 1 : -1);
+    const sorted = players.sort((a, b) => (b.last_seen || b.updated_at || '') > (a.last_seen || a.updated_at || '') ? 1 : -1);
     const slice = sorted.slice(0, limit);
 
     if (slice.length === 0) { this._print('No players found.'); return; }
@@ -157,10 +157,10 @@ Available commands:
     this._print('-'.repeat(header.length));
     for (const p of slice) {
       const name = (p.name || 'Unknown').slice(0, 23);
-      const kills = String(p.zeeksKilled || p.zeeks_killed || 0);
+      const kills = String(p.zeeks_killed || 0);
       const level = String(p.level || 0);
-      const seen = p.lastSeen || p.last_seen || p.updatedAt || p.updated_at || '-';
-      this._print(`${(p.steamId || p.steam_id || '').padEnd(20)} ${name.padEnd(24)} ${kills.padStart(6)} ${level.padStart(5)} ${String(seen).slice(0, 20).padEnd(20)}`);
+      const seen = p.last_seen || p.updated_at || '-';
+      this._print(`${(p.steam_id || '').padEnd(20)} ${name.padEnd(24)} ${kills.padStart(6)} ${level.padStart(5)} ${String(seen).slice(0, 20).padEnd(20)}`);
     }
   }
 
@@ -171,19 +171,19 @@ Available commands:
     const p = this._db.getPlayer(steamId);
     if (!p) { this._print(`Player not found: ${steamId}`); return; }
 
-    this._print(`Player: ${p.name || p.player_name || 'Unknown'}`);
-    this._print(`  Steam ID:    ${p.steamId || p.steam_id}`);
+    this._print(`Player: ${p.name || 'Unknown'}`);
+    this._print(`  Steam ID:    ${p.steam_id}`);
     this._print(`  Level:       ${p.level || 0}`);
-    this._print(`  Kills:       ${p.zeeksKilled || p.zeeks_killed || 0}`);
+    this._print(`  Kills:       ${p.zeeks_killed || 0}`);
     this._print(`  Headshots:   ${p.headshots || 0}`);
-    this._print(`  Days Surv:   ${p.daysSurvived || p.days_survived || 0}`);
-    this._print(`  Health:      ${p.health || 0} / ${p.maxHealth || p.max_health || 0}`);
+    this._print(`  Days Surv:   ${p.days_survived || 0}`);
+    this._print(`  Health:      ${p.health || 0} / ${p.max_health || 0}`);
     this._print(`  Hunger:      ${p.hunger || 0}`);
     this._print(`  Thirst:      ${p.thirst || 0}`);
     this._print(`  Infection:   ${p.infection || 0}`);
-    this._print(`  Online:      ${p.isOnline || p.is_online ? 'Yes' : 'No'}`);
-    this._print(`  Last Seen:   ${p.lastSeen || p.last_seen || '-'}`);
-    this._print(`  Updated:     ${p.updatedAt || p.updated_at || '-'}`);
+    this._print(`  Online:      ${p.online ? 'Yes' : 'No'}`);
+    this._print(`  Last Seen:   ${p.last_seen || '-'}`);
+    this._print(`  Updated:     ${p.updated_at || '-'}`);
 
     // Aliases
     try {

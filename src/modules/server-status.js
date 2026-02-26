@@ -1,6 +1,4 @@
 const { EmbedBuilder } = require('discord.js');
-const fs = require('fs');
-const path = require('path');
 const _defaultConfig = require('../config');
 const { getServerInfo, getPlayerList } = require('../rcon/server-info');
 const _defaultPlaytime = require('../tracking/playtime-tracker');
@@ -8,8 +6,6 @@ const _defaultPlayerStats = require('../tracking/player-stats');
 const _defaultServerResources = require('../server/server-resources');
 const { formatBytes } = require('../server/server-resources');
 const { getDayOffset, getRotatedProfileIndex } = require('./schedule-utils');
-
-const _DEFAULT_DATA_DIR = path.join(__dirname, '..', '..', 'data');
 
 function _formatTime(timeStr) {
   if (!timeStr) return null;
@@ -123,7 +119,6 @@ class ServerStatus {
     this._sendAdminMessage = deps.sendAdminMessage || require('../rcon/server-info').sendAdminMessage;
     this._db = deps.db || null;
     this._label = deps.label || 'STATUS';
-    this._dataDir = deps.dataDir || _DEFAULT_DATA_DIR;
 
     this.client = client;
     this.channel = null;
@@ -227,29 +222,15 @@ class ServerStatus {
 
   _loadMessageId() {
     try {
-      if (this._db) {
-        return this._db.getState('msg_id_server_status') || null;
-      }
-      const fp = path.join(this._dataDir, 'message-ids.json');
-      if (fs.existsSync(fp)) {
-        const data = JSON.parse(fs.readFileSync(fp, 'utf8'));
-        return data.serverStatus || null;
-      }
-    } catch {} return null;
+      if (this._db) return this._db.getState('msg_id_server_status') || null;
+    } catch {}
+    return null;
   }
 
   _saveMessageId() {
     if (!this.statusMessage) return;
     try {
-      if (this._db) {
-        this._db.setState('msg_id_server_status', this.statusMessage.id);
-      } else {
-        const fp = path.join(this._dataDir, 'message-ids.json');
-        let data = {};
-        try { if (fs.existsSync(fp)) data = JSON.parse(fs.readFileSync(fp, 'utf8')); } catch {}
-        data.serverStatus = this.statusMessage.id;
-        fs.writeFileSync(fp, JSON.stringify(data, null, 2));
-      }
+      if (this._db) this._db.setState('msg_id_server_status', this.statusMessage.id);
     } catch {}
   }
 
@@ -342,17 +323,16 @@ class ServerStatus {
    * Load persisted state from disk so uptime and cached data survive bot restarts.
    */
   _loadState() {
-    const STATE_FILE = path.join(this._dataDir, 'server-status-cache.json');
     try {
-      if (fs.existsSync(STATE_FILE)) {
-        const data = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'));
-        if (data.onlineSince) this._onlineSince = new Date(data.onlineSince);
-        if (data.offlineSince) this._offlineSince = new Date(data.offlineSince);
-        if (data.lastOnline !== undefined) this._lastOnline = data.lastOnline;
-        if (data.lastInfo) this._lastInfo = data.lastInfo;
-        if (data.lastPlayerList) this._lastPlayerList = data.lastPlayerList;
-        console.log(`[${this._label}] Loaded cached state (online since: ${data.onlineSince || 'unknown'})`);
-      }
+      if (!this._db) return;
+      const data = this._db.getStateJSON('server_status_cache', null);
+      if (!data) return;
+      if (data.onlineSince) this._onlineSince = new Date(data.onlineSince);
+      if (data.offlineSince) this._offlineSince = new Date(data.offlineSince);
+      if (data.lastOnline !== undefined) this._lastOnline = data.lastOnline;
+      if (data.lastInfo) this._lastInfo = data.lastInfo;
+      if (data.lastPlayerList) this._lastPlayerList = data.lastPlayerList;
+      console.log(`[${this._label}] Loaded cached state (online since: ${data.onlineSince || 'unknown'})`);
     } catch (err) {
       console.log(`[${this._label}] Could not load cached state:`, err.message);
     }
@@ -362,17 +342,16 @@ class ServerStatus {
    * Persist current state to disk so it survives bot restarts.
    */
   _saveState() {
-    const STATE_FILE = path.join(this._dataDir, 'server-status-cache.json');
     try {
-      const data = {
+      if (!this._db) return;
+      this._db.setStateJSON('server_status_cache', {
         onlineSince: this._onlineSince?.toISOString() || null,
         offlineSince: this._offlineSince?.toISOString() || null,
         lastOnline: this._lastOnline,
         lastInfo: this._lastInfo,
         lastPlayerList: this._lastPlayerList,
         savedAt: new Date().toISOString(),
-      };
-      fs.writeFileSync(STATE_FILE, JSON.stringify(data, null, 2));
+      });
     } catch (err) {
       console.error(`[${this._label}] Could not save state:`, err.message);
     }
@@ -383,19 +362,6 @@ class ServerStatus {
       if (this._db) {
         const data = this._db.getStateJSON('server_settings', null);
         if (data) return data;
-        return {};
-      }
-      const settingsFile = path.join(this._dataDir, 'server-settings.json');
-      if (fs.existsSync(settingsFile)) {
-        const stat = fs.statSync(settingsFile);
-        const mtime = stat.mtimeMs;
-        if (this._settingsCache && this._settingsCacheMtime === mtime) {
-          return this._settingsCache;
-        }
-        const data = JSON.parse(fs.readFileSync(settingsFile, 'utf8'));
-        this._settingsCache = data;
-        this._settingsCacheMtime = mtime;
-        return data;
       }
     } catch (_) {}
     return {};
