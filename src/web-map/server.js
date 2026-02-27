@@ -854,6 +854,17 @@ class WebMapServer {
       const players = this._parseSaveData();
       result.primary.totalPlayers = players.size;
 
+      // Fallback: maxPlayers from server settings if RCON didn't provide it
+      if (!result.primary.maxPlayers) {
+        try {
+          const settingsFile = path.join(DATA_DIR, 'server-settings.json');
+          if (fs.existsSync(settingsFile)) {
+            const settings = JSON.parse(fs.readFileSync(settingsFile, 'utf8'));
+            if (settings.MaxPlayers) result.primary.maxPlayers = parseInt(settings.MaxPlayers, 10) || null;
+          }
+        } catch { /* ignore */ }
+      }
+
       // Game day from save-cache (RCON doesn't return Day)
       if (!result.primary.gameDay) {
         try {
