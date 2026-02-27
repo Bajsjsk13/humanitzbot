@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const _defaultPlaytime = require('./playtime-tracker');
+const { classifyDamageLabel } = require('./damage-classifier');
 
 const DEFAULT_DATA_DIR = path.join(__dirname, '..', '..', 'data');
 
@@ -580,26 +581,7 @@ class PlayerStats {
   }
 
   _classifyDamageSource(source) {
-    // Specific zombie variants first (before generic Zombie catch-all)
-    if (/Dogzombie/i.test(source)) return 'Dog Zombie';
-    if (/ZombieBear/i.test(source)) return 'Zombie Bear';
-    if (/Mutant/i.test(source)) return 'Mutant';
-    if (/Runner.*Brute|Brute.*Runner|RunnerBrute/i.test(source)) return 'Runner Brute';
-    if (/Runner/i.test(source)) return 'Runner';
-    if (/Brute/i.test(source)) return 'Brute';
-    if (/Pudge|BellyToxic/i.test(source)) return 'Bloater';
-    if (/Police|Cop|MilitaryArmoured|Camo|Hazmat/i.test(source)) return 'Armoured';
-    if (/Zombie/i.test(source)) return 'Zombie';
-    if (/KaiHuman/i.test(source)) return 'Bandit';
-    if (/Wolf/i.test(source)) return 'Wolf';
-    if (/Bear/i.test(source)) return 'Bear';
-    if (/Deer/i.test(source)) return 'Deer';
-    if (/Snake/i.test(source)) return 'Snake';
-    if (/Spider/i.test(source)) return 'Spider';
-    if (/Human/i.test(source)) return 'NPC';
-    // If it's a player name (no BP_ prefix), treat as PvP
-    if (!source.startsWith('BP_')) return 'Player';
-    return 'Other';
+    return classifyDamageLabel(source);
   }
 
   // ─── Persistence ──────────────────────────────────────────

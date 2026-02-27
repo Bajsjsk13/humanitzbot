@@ -5,6 +5,7 @@ const { addAdminMembers } = require('../config');
 const { cleanName } = require('../parsers/ue4-names');
 const _defaultPlaytime = require('../tracking/playtime-tracker');
 const _defaultPlayerStats = require('../tracking/player-stats');
+const { classifyDamageSource, isNpcDamageSource } = require('../tracking/damage-classifier');
 
 class LogWatcher {
   constructor(client, deps = {}) {
@@ -78,43 +79,10 @@ class LogWatcher {
     this._deathCauseTracker = new Map();
   }
 
-  // ── Damage source classification ───────────────────────────
+  // ── Damage source classification (delegated to shared damage-classifier.js) ──
 
-  /**
-   * Classify a raw BP_ damage source into a human-readable name and category.
-   * Used for death attribution and damage stats.
-   * @param {string} source - Raw damage source (e.g. 'BP_PawnZombie_Runner_C_123')
-   * @returns {{ name: string, type: string }} classified result
-   */
   _classifyDamageSource(source) {
-    if (/Dogzombie/i.test(source)) return { name: 'Dog Zombie', type: 'zombie' };
-    if (/ZombieBear/i.test(source)) return { name: 'Zombie Bear', type: 'zombie' };
-    if (/Mutant/i.test(source)) return { name: 'Mutant', type: 'zombie' };
-    if (/Runner.*Brute|Brute.*Runner|RunnerBrute/i.test(source)) return { name: 'Runner Brute', type: 'zombie' };
-    if (/Runner/i.test(source)) return { name: 'Runner', type: 'zombie' };
-    if (/BruteCop/i.test(source)) return { name: 'Riot Brute', type: 'zombie' };
-    if (/Brute/i.test(source)) return { name: 'Brute', type: 'zombie' };
-    if (/Pudge|BellyToxic/i.test(source)) return { name: 'Bloater', type: 'zombie' };
-    if (/MilitaryArmoured/i.test(source)) return { name: 'Military Armoured', type: 'zombie' };
-    if (/PoliceArmor/i.test(source)) return { name: 'Police Armoured', type: 'zombie' };
-    if (/Police|Cop/i.test(source)) return { name: 'Police Zombie', type: 'zombie' };
-    if (/Medic/i.test(source)) return { name: 'Medic Zombie', type: 'zombie' };
-    if (/Hazmat/i.test(source)) return { name: 'Hazmat Zombie', type: 'zombie' };
-    if (/Camo/i.test(source)) return { name: 'Camo Zombie', type: 'zombie' };
-    if (/Urban/i.test(source)) return { name: 'Urban Zombie', type: 'zombie' };
-    if (/Girl|Female/i.test(source)) return { name: 'Female Zombie', type: 'zombie' };
-    if (/Zombie/i.test(source)) return { name: 'Zombie', type: 'zombie' };
-    if (/KaiHuman/i.test(source)) return { name: 'Bandit', type: 'bandit' };
-    if (/Wolf/i.test(source)) return { name: 'Wolf', type: 'animal' };
-    if (/Bear(?!.*Zombie)/i.test(source)) return { name: 'Bear', type: 'animal' };
-    if (/Deer|Stag|Doe/i.test(source)) return { name: 'Deer', type: 'animal' };
-    if (/Snake/i.test(source)) return { name: 'Snake', type: 'animal' };
-    if (/Spider/i.test(source)) return { name: 'Spider', type: 'animal' };
-    if (/Pig/i.test(source)) return { name: 'Pig', type: 'animal' };
-    if (/Rabbit/i.test(source)) return { name: 'Rabbit', type: 'animal' };
-    if (/Chicken/i.test(source)) return { name: 'Chicken', type: 'animal' };
-    if (!source.startsWith('BP_')) return { name: source, type: 'player' };
-    return { name: 'Unknown', type: 'environment' };
+    return classifyDamageSource(source);
   }
 
   // ── Day Counts Persistence ─────────────────────────────────
@@ -218,23 +186,8 @@ class LogWatcher {
     return null;
   }
 
-  /**
-   * Check if a damage source looks like an NPC/AI entity rather than a player.
-   * All game NPC sources normally have a BP_ prefix (filtered before this).
-   * This is a secondary safety net for edge cases.
-   *
-   * We check for:
-   *   1. Names containing underscores (UE4 blueprint convention, players can't have underscores)
-   *   2. Known NPC type keywords as exact match only (case-insensitive)
-   */
   _isNpcDamageSource(source) {
-    // UE4 blueprint-style names always have underscores — player names don't
-    if (source.includes('_')) return true;
-    // Exact-match check for bare NPC type names (without BP_ prefix).
-    // In practice, ALL NPC damage is logged with BP_ prefix, so this only
-    // catches hypothetical edge cases. We use exact match to avoid false
-    // positives on player names like "SnakeEyes", "GrizzlyBear", etc.
-    return /^(?:Zombie|ZombieBear|KaiHuman|Mutant|Runner|Brute|RunnerBrute|Pudge|Dogzombie|BellyToxic|Police|Cop|Military|MilitaryArmoured|Hazmat|Camo|Wolf|Bear|Deer|Snake|Spider)$/i.test(source);
+    return isNpcDamageSource(source);
   }
 
   _prunePvpTracker() {
