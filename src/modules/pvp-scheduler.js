@@ -385,20 +385,38 @@ class PvpScheduler {
     let restartSucceeded = false;
     const container = process.env.DOCKER_CONTAINER;
 
-    // Prefer Docker restart when configured — RCON RestartNow doesn't reliably
-    // reinitialise RCON inside a container, leaving the bot unable to reconnect.
+    // Prefer LinuxGSM restart inside the container — restarts the game process
+    // without touching the container itself. LinuxGSM gracefully stops the game,
+    // waits for clean exit, then starts fresh so RCON port binds correctly.
+    // Falls back to docker stop+start if LinuxGSM fails.
     if (container) {
       try {
         const { exec } = require('child_process');
         await new Promise((resolve, reject) => {
-          exec(`docker restart ${container}`, { timeout: 120000 }, (err) => {
-            if (err) reject(err); else resolve();
+          exec(`docker exec -u linuxgsm ${container} /app/hzserver restart`, { timeout: 120000 }, (err, stdout) => {
+            if (err) reject(err);
+            else {
+              if (stdout) console.log(`[${this._label}] LinuxGSM: ${stdout.trim().split('\n').pop()}`);
+              resolve();
+            }
           });
         });
-        console.log(`[${this._label}] Restart via Docker CLI (${container})`);
+        console.log(`[${this._label}] Restart via LinuxGSM (${container})`);
         restartSucceeded = true;
-      } catch (dockerErr) {
-        console.warn(`[${this._label}] Docker restart failed:`, dockerErr.message);
+      } catch (lgsmErr) {
+        console.warn(`[${this._label}] LinuxGSM restart failed: ${lgsmErr.message}, falling back to docker stop+start`);
+        try {
+          const { exec } = require('child_process');
+          await new Promise((resolve, reject) => {
+            exec(`docker stop ${container} && docker start ${container}`, { timeout: 120000 }, (err) => {
+              if (err) reject(err); else resolve();
+            });
+          });
+          console.log(`[${this._label}] Restart via Docker stop+start (${container})`);
+          restartSucceeded = true;
+        } catch (dockerErr) {
+          console.warn(`[${this._label}] Docker restart also failed:`, dockerErr.message);
+        }
       }
     }
 
@@ -424,8 +442,8 @@ class PvpScheduler {
       this._currentPvp = targetPvp;
 
       // Post-restart RCON health check — if RCON doesn't reconnect within 90s,
-      // the game server likely failed to bind the RCON port (race condition).
-      // Trigger a second Docker restart to recover.
+      // the game server likely failed to bind the RCON port.
+      // Trigger a LinuxGSM restart (or docker stop+start) to recover.
       if (container) {
         this._scheduleRconHealthCheck(container);
       }
@@ -436,9 +454,9 @@ class PvpScheduler {
   }
 
   /**
-   * After a Docker restart, poll RCON connectivity for up to 90s.
+   * After a restart, poll RCON connectivity for up to 90s.
    * If RCON doesn't come back, the game server likely failed to bind the port.
-   * Trigger a second Docker restart to recover.
+   * Trigger a LinuxGSM restart (or docker stop+start fallback) to recover.
    */
   _scheduleRconHealthCheck(container) {
     const checkInterval = 10_000;
@@ -454,12 +472,17 @@ class PvpScheduler {
       }
       if (Date.now() - start >= maxWait) {
         clearInterval(timer);
-        console.warn(`[${this._label}] RCON health check FAILED — no connection after ${maxWait / 1000}s, restarting container again`);
+        console.warn(`[${this._label}] RCON health check FAILED — no connection after ${maxWait / 1000}s, restarting game process`);
         try {
           const { exec } = require('child_process');
+          // Try LinuxGSM first, fall back to docker stop+start
           await new Promise((resolve, reject) => {
-            exec(`docker restart ${container}`, { timeout: 120000 }, (err) => {
-              if (err) reject(err); else resolve();
+            exec(`docker exec -u linuxgsm ${container} /app/hzserver restart`, { timeout: 120000 }, (err) => {
+              if (err) {
+                exec(`docker stop ${container} && docker start ${container}`, { timeout: 120000 }, (err2) => {
+                  if (err2) reject(err2); else resolve();
+                });
+              } else resolve();
             });
           });
           console.log(`[${this._label}] Recovery restart sent (${container})`);
