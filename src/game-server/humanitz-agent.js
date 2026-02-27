@@ -2378,7 +2378,12 @@ function parseAndWrite(savePath, outputPath, pretty) {
   };
 
   const json = pretty ? JSON.stringify(cache, null, 2) : JSON.stringify(cache);
-  _fs.writeFileSync(outputPath, json);
+
+  // Atomic write: write to temp file then rename to prevent the bot
+  // from reading a partially-written cache during an FTP download
+  const tmpPath = outputPath + '.tmp';
+  _fs.writeFileSync(tmpPath, json);
+  _fs.renameSync(tmpPath, outputPath);
 
   const elapsed = Date.now() - startTime;
   const sizeMB = (json.length / 1024 / 1024).toFixed(2);
