@@ -564,20 +564,25 @@
   async function loadDashboard() {
     try {
       var results = await Promise.all([fetch('/api/panel/status'), fetch('/api/panel/stats')]);
-      var status = await results[0].json();
-      var stats = await results[1].json();
+      var status = results[0].ok ? await results[0].json() : {};
+      var stats = results[1].ok ? await results[1].json() : {};
 
       var isOn = status.serverState === 'running';
       var stEl = $('#d-status');
-      if (stEl) { stEl.textContent = isOn ? 'Online' : 'Offline'; stEl.style.color = isOn ? '#6dba82' : '#c45a4a'; }
+      if (stEl) {
+        if (status.serverState) { stEl.textContent = isOn ? 'Online' : 'Offline'; stEl.style.color = isOn ? '#6dba82' : '#c45a4a'; }
+        else { stEl.textContent = '-'; stEl.style.color = ''; }
+      }
 
       var onEl = $('#d-online');
-      if (onEl) onEl.textContent = stats.onlinePlayers + ' / ' + (status.maxPlayers || '?');
+      if (onEl) onEl.textContent = stats.onlinePlayers != null ? stats.onlinePlayers + ' / ' + (status.maxPlayers || '?') : '-';
 
       var totEl = $('#d-total');
       if (totEl) {
-        var offline = (stats.totalPlayers || 0) - (stats.onlinePlayers || 0);
-        totEl.textContent = stats.totalPlayers + ' (' + offline + ' offline)';
+        if (stats.totalPlayers != null) {
+          var offline = (stats.totalPlayers || 0) - (stats.onlinePlayers || 0);
+          totEl.textContent = stats.totalPlayers + ' (' + offline + ' offline)';
+        } else { totEl.textContent = '-'; }
       }
 
       var wEl = $('#d-world');
