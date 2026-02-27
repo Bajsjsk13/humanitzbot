@@ -1,6 +1,6 @@
 # Changelog — Experimental Branch
 
-**Generated:** 2026-02-26  
+**Generated:** 2026-02-27  
 **Branch:** `experimental`  
 **Base:** `main`  
 **Status:** Active Development
@@ -9,13 +9,13 @@
 
 ## Summary
 
-- **Total Commits:** 60
+- **Total Commits:** 80
 - **Main Branch Commits:** 33
-- **Experimental-Only Commits:** 27
-- **Files Changed:** 79
-  - Added: 33
-  - Modified: 42
-  - Deleted: 4
+- **Experimental-Only Commits:** 47
+- **Files Changed:** 101
+  - Added: 46
+  - Modified: 34
+  - Deleted: 6
 
 ---
 
@@ -25,6 +25,14 @@ These features exist only in the experimental branch and are not yet merged to m
 
 ### New Features
 
+- DB seeding in setup.js, per-server DB for multi-server, playtime flush timer `5f7d640`
+  - - setup.js: Added seedDatabase() to write imported player stats and playtime
+  - directly to SQLite after first-run SFTP import, preventing orphaned data
+  - when PlayerStats/PlaytimeTracker no longer read JSON files
+- DB-first migration Phase 1 — eliminate JSON persistence, use bot_state `2df72a0`
+  - Schema v12 adds bot_state key-value table for runtime operational state.
+  - All modules now persist to SQLite instead of JSON files:
+  - - PlayerStats: removed JSON load/save/autoSave/migration (~190 lines deleted)
 - complete .env sync + dynamic changelog generator `fd83e2f`
   - Panel Button Integration:
   - - Sync .env button in bot controls panel
@@ -39,6 +47,7 @@ These features exist only in the experimental branch and are not yet merged to m
 
 ### Bug Fixes
 
+- template DB now includes game_ref_version in meta table `3bd828e`
 - audit fixes — nuke wipe list, PUBLIC_HOST in .env.example, test stability `68596c3`
 - web map loads player data immediately on page load `6d6611b`
 - wire DISCORD_OAUTH_SECRET to config for web map startup `0856f77`
@@ -52,10 +61,27 @@ These features exist only in the experimental branch and are not yet merged to m
 
 ### Documentation
 
+- regenerate changelog with correct commit hashes `c0fab31`
 - update changelog with latest commits `a0ddc72`
 
 ### Other Changes
 
+- Replace Tailwind CDN with compiled CSS build `5d8ad26`
+- Fix dashboard layout and sparkline chart expansion `bacd4ec`
+- Correct all game reference data against authoritative extraction `069a8f9`
+- Harden web panel security and fix broken test suites `5cefab6`
+- Add reverse proxy support for web panel `755836f`
+- Use LinuxGSM restart inside container instead of docker restart `9951ba3`
+- Fix playtime data loss, embed duplication, env-sync settings destruction, and clan field mismatch `08e1f81`
+- Runtime-configurable display settings, .env bootstrap, and Discord setup wizard `e78fb63`
+- Remove JSON file fallbacks — DB is sole data store\n\nAutoMessages: removed JSON fallbacks from loadCachedSettings() and\nloadWelcomeStats(), removed unused dataDir parameter and fs/path imports.\n\nLogWatcher: removed JSON fallbacks from day-counts, pvp-kills, and\nlog-offsets persistence. All state reads/writes use bot_state table.\nRemoved fs/path imports and constructor path constants.\n\nPanelChannel: removed JSON fallbacks from settings cache, message IDs,\nand multi-server settings. Multi-server settings now use bot_state with\nper-server keys. Removed SETTINGS_CACHE and _DATA_DIR constants.\n\nPlayerStatsChannel: removed orphaned _DEFAULT_DATA_DIR constant and\nunused this._dataDir from constructor." `6a5bebb`
+- ServerStatus reads from DB, remove JSON fallbacks from server-status and stdin-console `0bdfbed`
+- PlayerStatsChannel reads from DB instead of SFTP, remove JSON dual-writes `a15f677`
+- Add stdin console for headless hosts, template DB with copy-on-first-run `c11a0e0`
+- Regenerate humanitz-agent.js for updated project structure `e9452c2`
+- Update .gitignore comments to reflect data/ subdirectory structure `06c9f20`
+- Restructure project: organize src/ into module directories, clean up data/ `64d4cfc`
+- track game-tables-raw.json for DB seeding until template DB is built `020aa45`
 - Schema v11, game data extraction pipeline, timeline snapshots, repo hygiene `0ab828d`
 - DB-first architecture, schema v9, embed redesign, item tracking, codebase cleanup `fb67ff8`
 - Server scheduler with daily rotation, web panel security, map calibration `9f58741`
@@ -72,20 +98,27 @@ These features exist only in the experimental branch and are not yet merged to m
 
 ## File Changes
 
-### Added Files (33)
+### Added Files (46)
 
-- `scripts/generate-changelog.js`
-- `src/activity-log.js`
+- `data/game-tables-raw.json`
+- `data/humanitz-template.db`
+- `src/db/build-template-db.js`
 - `src/db/diff-engine.js`
 - `src/db/item-fingerprint.js`
 - `src/db/item-tracker.js`
 - `src/env-sync.js`
-- `src/game-data-extract.js`
-- `src/rcon-colors.js`
-- `src/schedule-utils.js`
-- `src/server-scheduler.js`
-- `src/snapshot-service.js`
-- `src/ue4-names.js`
+- `src/modules/activity-log.js`
+- `src/modules/milestone-tracker.js`
+- `src/modules/player-embed.js`
+- `src/modules/recap-service.js`
+- `src/modules/schedule-utils.js`
+- `src/modules/server-scheduler.js`
+- `src/parsers/game-data-extract.js`
+- `src/parsers/game-data.js`
+- `src/parsers/ue4-names.js`
+- `src/rcon/rcon-colors.js`
+- `src/stdin-console.js`
+- `src/tracking/snapshot-service.js`
 - `src/web-map/auth.js`
 - `src/web-map/dev-server.js`
 - `src/web-map/public/app.js`
@@ -98,17 +131,23 @@ These features exist only in the experimental branch and are not yet merged to m
 - `src/web-map/public/panel.css`
 - `src/web-map/public/panel.html`
 - `src/web-map/public/panel.js`
+- `src/web-map/public/tailwind-input.css`
+- `src/web-map/public/tailwind.css`
 - `src/web-map/public/timeline.js`
 - `src/web-map/server.js`
+- `tailwind.config.js`
 - `test/diff-engine.test.js`
 - `test/interactions.test.js`
 - `test/item-fingerprint.test.js`
 - `test/item-tracker.test.js`
+- `test/milestone-tracker.test.js`
+- `test/recap-service.test.js`
 - `test/schedule-utils.test.js`
+- `test/stdin-console.test.js`
 - `test/timeline.test.js`
 - `test/ue4-names.test.js`
 
-### Modified Files (42)
+### Modified Files (34)
 
 - `.env.example`
 - `.gitignore`
@@ -116,46 +155,40 @@ These features exist only in the experimental branch and are not yet merged to m
 - `package-lock.json`
 - `package.json`
 - `setup.js`
-- `src/auto-messages.js`
-- `src/chat-relay.js`
 - `src/commands/panel.js`
+- `src/commands/players.js`
 - `src/commands/playerstats.js`
+- `src/commands/playtime.js`
 - `src/commands/rcon.js`
 - `src/commands/server.js`
 - `src/commands/threads.js`
 - `src/config.js`
 - `src/db/database.js`
 - `src/db/schema.js`
-- `src/game-data.js`
 - `src/game-server/humanitz-agent.js`
 - `src/index.js`
-- `src/log-watcher.js`
-- `src/multi-server.js`
-- `src/panel-channel.js`
 - `src/parsers/agent-builder.js`
 - `src/parsers/game-reference.js`
 - `src/parsers/gvas-reader.js`
 - `src/parsers/save-parser.js`
 - `src/parsers/save-service.js`
-- `src/player-embed.js`
-- `src/player-stats-channel.js`
-- `src/player-stats.js`
-- `src/playtime-tracker.js`
-- `src/pvp-scheduler.js`
-- `src/rcon.js`
-- `src/server-info.js`
-- `src/server-resources.js`
-- `src/server-status.js`
 - `test/agent.test.js`
 - `test/game-data.test.js`
 - `test/log-watcher.test.js`
 - `test/new-parser.test.js`
+- `test/player-stats-channel.test.js`
+- `test/player-stats.test.js`
+- `test/playtime-tracker.test.js`
+- `test/pvp-scheduler.test.js`
 - `test/save-parser.test.js`
+- `test/server-info.test.js`
 - `test/web-map-auth.test.js`
 
-### Deleted Files (4)
+### Deleted Files (6)
 
 - `src/commands/map.js`
+- `src/game-data.js`
+- `src/player-embed.js`
 - `src/player-map.js`
 - `src/save-parser.js`
 - `test/player-map.test.js`
@@ -163,6 +196,332 @@ These features exist only in the experimental branch and are not yet merged to m
 ---
 
 ## Complete History (All Commits)
+
+### [EXPERIMENTAL] `5d8ad26` Replace Tailwind CDN with compiled CSS build
+
+**Author:** QS-Zuq  
+**Date:** 2026-02-27  
+**Type:** other  
+**Status:** Experimental only  
+
+**Details:**
+```
+- Install tailwindcss@3 as devDependency, add build:css and dev:css scripts
+- Create tailwind.config.js at project root with the survival theme
+- Build compiled tailwind.css (20KB minified) from HTML + JS content scan
+- Replace CDN <script> tag with compiled <link> stylesheet in panel.html
+- Remove cdn.tailwindcss.com from Content-Security-Policy header
+- Remove unused browser-side tailwind-config.js from public/
+Fixes the production CDN warning. End users serve pre-compiled CSS;
+developers run npm run build:css after changing Tailwind classes.
+```
+
+### [EXPERIMENTAL] `3bd828e` template DB now includes game_ref_version in meta table
+
+**Author:** QS-Zuq  
+**Date:** 2026-02-27  
+**Type:** fix  
+**Status:** Experimental only  
+
+**Details:**
+```
+Without this, first-run installs from the template would trigger an
+unnecessary re-seed of all 22 game reference tables on every startup
+because the version check couldn't find the stored version.
+```
+
+### [EXPERIMENTAL] `bacd4ec` Fix dashboard layout and sparkline chart expansion
+
+**Author:** QS-Zuq  
+**Date:** 2026-02-27  
+**Type:** other  
+**Status:** Experimental only  
+
+**Details:**
+```
+- Wrap sparkline canvases in fixed-height containers to prevent
+  infinite vertical growth from Chart.js responsive resize
+- Add overflow:hidden to stat-card to clip any overflow
+- Set resizeDelay:0 on Chart options for immediate sizing
+- Replace fixed 2-column grid for schedule/resources cards with
+  auto-fit layout that adapts when cards are hidden
+```
+
+### [EXPERIMENTAL] `069a8f9` Correct all game reference data against authoritative extraction
+
+**Author:** QS-Zuq  
+**Date:** 2026-02-27  
+**Type:** other  
+**Status:** Experimental only  
+
+**Details:**
+```
+ENUM_MAPS: Overhauled 13 enums with data-verified values, added 6 new
+enums (E_ClanRank, E_DogCommand, E_QuestStatus, Enum_CharacterStartPerk,
+E_InvSlotType, E_ContainerSlots). E_SpecificType, Enum_SkillCategories,
+Enum_Professions, E_ResourceType, E_CarUpgradeTypes all corrected against
+actual DT usage.
+Skills: seedSkills() now uses SKILL_DETAILS (35 extracted from DT_Skills)
+as primary source instead of hand-curated SKILL_EFFECTS (21). All skill
+categories verified: Survival(0), Crafting(1), Combat(2).
+Challenges: New DT_StatConfig extractor (67 entries). CHALLENGES merges
+DT_Statistics + DT_StatConfig via Map dedup — 116 total with progressMax.
+Upgrade path: GAME_REF_VERSION=2 auto-detects stale reference data and
+re-seeds existing databases on startup.
+Template DB regenerated with correct data (718 items, 35 skills, 116
+challenges, proper enum resolutions).
+Web panel: Minify front-facing JS/CSS/HTML. Add tailwind-config.js.
+```
+
+### [EXPERIMENTAL] `5cefab6` Harden web panel security and fix broken test suites
+
+**Author:** QS-Zuq  
+**Date:** 2026-02-27  
+**Type:** other  
+**Status:** Experimental only  
+
+**Details:**
+```
+Security (web panel):
+- Sanitize RCON input on message and console endpoints: strip control
+  characters and newlines to prevent command injection (same pattern
+  as chat-relay)
+- Consolidate RCON command blocklists between web panel and slash
+  command: both now block the same set of destructive commands using
+  first-word matching instead of startsWith
+- Use timing-safe comparison for OAuth state parameter (consistent
+  with session signature verification)
+- Persist session secret: generate once per process if not configured,
+  warn when WEB_MAP_SESSION_SECRET is not set in .env
+- Add rate limiting to remaining unprotected timeline endpoints
+- Add dotfiles: deny to static file serving
+- Add WEB_MAP_SESSION_SECRET to .env.example as optional key
+Bug fixes:
+- stdin-console: fix _cmdWorld() to handle getAllWorldState() returning
+  an object instead of an array
+- stdin-console test: add missing db.init() call in before() hook
+- web-map-auth test: update assertion to match current setupAuth
+  behavior (stub routes registered even when OAuth is disabled)
+Tests: 753/753 passing (was 721/753 before this commit)
+```
+
+### [EXPERIMENTAL] `755836f` Add reverse proxy support for web panel
+
+**Author:** QS-Zuq  
+**Date:** 2026-02-27  
+**Type:** other  
+**Status:** Experimental only  
+
+**Details:**
+```
+Set Express trust proxy to loopback so X-Forwarded-* headers from
+the local Caddy reverse proxy are respected. This ensures correct
+client IP resolution, secure cookie handling, and protocol detection
+when the panel is served behind HTTPS.
+```
+
+### [EXPERIMENTAL] `9951ba3` Use LinuxGSM restart inside container instead of docker restart
+
+**Author:** QS-Zuq  
+**Date:** 2026-02-27  
+**Type:** other  
+**Status:** Experimental only  
+
+**Details:**
+```
+LinuxGSM gracefully stops the game process, waits for clean exit, then
+starts fresh — RCON port binds correctly because the old process fully
+releases it. Falls back to docker stop+start if LinuxGSM fails.
+docker restart sends SIGTERM then immediately starts, which can leave
+RCON on a random port when the game hasn't released port 8888 yet.
+```
+
+### [EXPERIMENTAL] `08e1f81` Fix playtime data loss, embed duplication, env-sync settings destruction, and clan field mismatch
+
+**Author:** QS-Zuq  
+**Date:** 2026-02-27  
+**Type:** other  
+**Status:** Experimental only  
+
+**Details:**
+```
+PlaytimeTracker: Fix init/setDb race condition where init() runs before
+setDb() is called, causing empty data to overwrite DB. setDb() now reloads
+from DB using MAX() to preserve the highest known values. upsertPlayerPlaytime
+uses MAX() as defense in depth.
+Server status / player stats / panel channel: Remove bootTime-based message
+filtering in cleanup routines that skipped recently-posted messages during
+rapid systemd restarts, causing duplicate embeds to accumulate.
+Env-sync: Fix parseEnv() to handle commented optional keys in .env.example
+(e.g. #RESTART_TIMES=...) so they are recognized as valid optional keys
+rather than classified as deprecated and removed from the user's .env.
+Backups now saved to data/backups/ with 2-file retention instead of
+accumulating .env.backup.* files in the project root.
+Database: getAllClans() now normalizes member fields to camelCase (steamId,
+canInvite, canKick) while preserving snake_case aliases, fixing clan
+kills and playtime showing as zero in welcome message leaderboards.
+Also includes milestone tracker, recap service modules, and web panel
+enhancements from prior work.
+```
+
+### [EXPERIMENTAL] `e78fb63` Runtime-configurable display settings, .env bootstrap, and Discord setup wizard
+
+**Author:** QS-Zuq  
+**Date:** 2026-02-26  
+**Type:** other  
+**Status:** Experimental only  
+
+**Details:**
+```
+Display toggles (SHOW_*, feed toggles, admin-only flags) stored in bot_state DB — editable via panel channel without restart. PANEL_CHANNEL_ID is now required. If no .env exists, copy from template and exit with setup instructions.
+Discord setup wizard: when RCON credentials are missing, bot boots in minimal mode and posts an interactive wizard in the panel channel. Guides users through hosting profile selection, RCON/SFTP credential entry with live connection testing, SFTP auto-discovery of game files, and channel assignment. Writes .env and triggers FIRST_RUN on apply.
+Config validation relaxed — RCON no longer hard-required at startup. Added config.needsSetup flag. index.js skips all modules except PanelChannel when in setup mode.
+```
+
+### [EXPERIMENTAL] `6a5bebb` Remove JSON file fallbacks — DB is sole data store\n\nAutoMessages: removed JSON fallbacks from loadCachedSettings() and\nloadWelcomeStats(), removed unused dataDir parameter and fs/path imports.\n\nLogWatcher: removed JSON fallbacks from day-counts, pvp-kills, and\nlog-offsets persistence. All state reads/writes use bot_state table.\nRemoved fs/path imports and constructor path constants.\n\nPanelChannel: removed JSON fallbacks from settings cache, message IDs,\nand multi-server settings. Multi-server settings now use bot_state with\nper-server keys. Removed SETTINGS_CACHE and _DATA_DIR constants.\n\nPlayerStatsChannel: removed orphaned _DEFAULT_DATA_DIR constant and\nunused this._dataDir from constructor."
+
+**Author:** QS-Zuq  
+**Date:** 2026-02-26  
+**Type:** other  
+**Status:** Experimental only  
+
+### [EXPERIMENTAL] `0bdfbed` ServerStatus reads from DB, remove JSON fallbacks from server-status and stdin-console
+
+**Author:** QS-Zuq  
+**Date:** 2026-02-26  
+**Type:** other  
+**Status:** Experimental only  
+
+### [EXPERIMENTAL] `a15f677` PlayerStatsChannel reads from DB instead of SFTP, remove JSON dual-writes
+
+**Author:** QS-Zuq  
+**Date:** 2026-02-26  
+**Type:** other  
+**Status:** Experimental only  
+
+### [EXPERIMENTAL] `c11a0e0` Add stdin console for headless hosts, template DB with copy-on-first-run
+
+**Author:** QS-Zuq  
+**Date:** 2026-02-26  
+**Type:** other  
+**Status:** Experimental only  
+
+**Details:**
+```
+Stdin console (ENABLE_STDIN_CONSOLE): interactive CLI via process.stdin
+for managing the bot on hosts without SSH access (e.g. Bisect). Commands
+for player lookup, DB stats, SQL queries, bot_state management, world
+state, clans, vehicles. Read-only by default, write ops gated behind
+STDIN_CONSOLE_WRITABLE toggle.
+Template DB: pre-seeded humanitz-template.db (1.3MB, 3291 rows across
+23 game reference tables). On first run, database.js copies it as the
+starting point instead of extracting from 22MB game-tables-raw.json.
+game-reference.js skips seeding if tables already populated.
+```
+
+### [EXPERIMENTAL] `e9452c2` Regenerate humanitz-agent.js for updated project structure
+
+**Author:** QS-Zuq  
+**Date:** 2026-02-26  
+**Type:** other  
+**Status:** Experimental only  
+
+### [EXPERIMENTAL] `06c9f20` Update .gitignore comments to reflect data/ subdirectory structure
+
+**Author:** QS-Zuq  
+**Date:** 2026-02-26  
+**Type:** other  
+**Status:** Experimental only  
+
+### [EXPERIMENTAL] `64d4cfc` Restructure project: organize src/ into module directories, clean up data/
+
+**Author:** QS-Zuq  
+**Date:** 2026-02-26  
+**Type:** other  
+**Status:** Experimental only  
+
+**Details:**
+```
+Source reorganization:
+- src/modules/ — activity-log, auto-messages, chat-relay, log-watcher,
+  panel-channel, player-embed, player-stats-channel, pvp-scheduler,
+  schedule-utils, server-scheduler, server-status, status-channels
+- src/rcon/ — rcon.js, rcon-colors.js, server-info.js
+- src/server/ — multi-server.js, panel-api.js, server-resources.js
+- src/tracking/ — player-stats.js, playtime-tracker.js, snapshot-service.js
+- src/parsers/ — game-data.js, game-data-extract.js, ue4-names.js (joined
+  existing save-parser, gvas-reader, agent-builder, game-reference)
+- src/db/ — added build-template-db.js (from scripts/)
+- tools/ — moved generate-changelog.js (gitignored, dev-only)
+- Removed scripts/ directory
+Data folder cleanup:
+- data/logs/ — downloaded server logs (PlayerIDMapped.txt,
+  PlayerConnectedLog.txt, HMZLog-downloaded.log)
+- data/backups/ — all backup files (player-stats, playtime, .env)
+- data/game-reference/ — obsolete dt-*.txt datatable dumps
+- Updated all path references across modules, web-map, setup.js
+All require() paths updated across 50+ files. 674/674 tests passing.
+```
+
+### [EXPERIMENTAL] `5f7d640` DB seeding in setup.js, per-server DB for multi-server, playtime flush timer
+
+**Author:** QS-Zuq  
+**Date:** 2026-02-26  
+**Type:** feat  
+**Status:** Experimental only  
+
+**Details:**
+```
+- setup.js: Added seedDatabase() to write imported player stats and playtime
+  directly to SQLite after first-run SFTP import, preventing orphaned data
+  when PlayerStats/PlaytimeTracker no longer read JSON files
+- multi-server: Each ServerInstance now creates its own HumanitZDB at
+  data/servers/<id>/humanitz.db with game reference seeding, passed to
+  PlayerStats and PlaytimeTracker for full DB persistence
+- index.js + multi-server: Added 60-second playtime flush timer calling
+  flushActiveSessions() to persist active session data periodically,
+  preventing data loss on unexpected shutdown
+```
+
+### [EXPERIMENTAL] `2df72a0` DB-first migration Phase 1 — eliminate JSON persistence, use bot_state
+
+**Author:** QS-Zuq  
+**Date:** 2026-02-26  
+**Type:** feat  
+**Status:** Experimental only  
+
+**Details:**
+```
+Schema v12 adds bot_state key-value table for runtime operational state.
+All modules now persist to SQLite instead of JSON files:
+- PlayerStats: removed JSON load/save/autoSave/migration (~190 lines deleted)
+- PlaytimeTracker: removed JSON persistence, added flushActiveSessions()
+- LogWatcher: log-offsets, day-counts, pvp-kills moved to bot_state
+  (JSON fallback retained for multi-server without DB)
+- ServerStatus: message ID + settings reads from bot_state
+- PlayerStatsChannel: message ID, kill tracker, weekly baseline,
+  welcome stats, server settings all use bot_state (dual-write to
+  JSON kept for modules without DB access)
+- PanelChannel: message IDs stored in bot_state
+- AutoMessages: helper functions accept optional db param
+- bot-running.flag replaced with bot_state key
+FIRST_RUN clears bot_state transient keys. Shutdown deletes
+bot_running before db.close(). All 674 tests pass.
+```
+
+### [EXPERIMENTAL] `020aa45` track game-tables-raw.json for DB seeding until template DB is built
+
+**Author:** QS-Zuq  
+**Date:** 2026-02-26  
+**Type:** other  
+**Status:** Experimental only  
+
+### [EXPERIMENTAL] `c0fab31` regenerate changelog with correct commit hashes
+
+**Author:** QS-Zuq  
+**Date:** 2026-02-26  
+**Type:** docs  
+**Status:** Experimental only  
 
 ### [EXPERIMENTAL] `0ab828d` Schema v11, game data extraction pipeline, timeline snapshots, repo hygiene
 
@@ -257,7 +616,7 @@ Infrastructure:
 - Env-sync preserves dynamic keys (RESTART_PROFILE_*, PVP_HOURS_*, etc.)
   via DYNAMIC_PREFIXES list instead of deprecating them
 - Activity log deduplication (consecutive identical events collapse with ×N)
-- Map coordinate calibration (xMin:3250, xMax:399150, yMin:-398550, yMax:-2650)
+- Map coordinate calibration (xMin:3076, xMax:398076, yMin:-397582, yMax:-2582)
 - Player map tests updated for calibrated bounds
 ```
 
@@ -1187,4 +1546,4 @@ Fixes:
 
 **Repository:** QS-Zuq/humanitzbot-dev  
 **Branch Comparison:** `main..experimental`  
-**Last Generated:** 2026-02-26T13:46:46.240Z
+**Last Generated:** 2026-02-27T15:15:56.403Z
