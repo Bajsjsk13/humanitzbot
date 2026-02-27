@@ -278,6 +278,62 @@ describe('Item Tracker', () => {
       assert.equal(shotgunItems.length, 1);
     });
 
+    it('searchItemInstances finds items by fingerprint', () => {
+      const snapshot = {
+        players: new Map([
+          ['76561100000000001', {
+            inventory: [
+              { item: 'AK47', amount: 1, durability: 0.85 },
+              { item: 'Shotgun', amount: 1, durability: 0.5 },
+            ],
+            equipment: [], quickSlots: [], backpackItems: [],
+            x: 100, y: 200, z: 50,
+          }],
+        ]),
+        containers: [], vehicles: [], horses: [], structures: [], worldState: {},
+      };
+      reconcileItems(db, snapshot);
+
+      // Grab the fingerprint from a stored instance
+      const allAk = db.searchItemInstances('AK47');
+      assert.ok(allAk.length >= 1);
+      const fp = allAk[0].fingerprint;
+      assert.ok(fp, 'item should have a fingerprint');
+
+      // Searching by that fingerprint should return the same item
+      const byFp = db.searchItemInstances(fp);
+      assert.ok(byFp.length >= 1);
+      assert.equal(byFp[0].item, 'AK47');
+    });
+
+    it('searchItemGroups finds groups by fingerprint', () => {
+      const snapshot = {
+        players: new Map([
+          ['76561100000000001', {
+            inventory: [
+              { item: 'Nails', amount: 50, durability: 1.0 },
+              { item: 'Nails', amount: 50, durability: 1.0 },
+            ],
+            equipment: [], quickSlots: [], backpackItems: [],
+            x: 100, y: 200, z: 50,
+          }],
+        ]),
+        containers: [], vehicles: [], horses: [], structures: [], worldState: {},
+      };
+      reconcileItems(db, snapshot);
+
+      // Grab the fingerprint from a stored group
+      const allNails = db.searchItemGroups('Nails');
+      assert.ok(allNails.length >= 1);
+      const fp = allNails[0].fingerprint;
+      assert.ok(fp, 'group should have a fingerprint');
+
+      // Searching by fingerprint should return the same group
+      const byFp = db.searchItemGroups(fp);
+      assert.ok(byFp.length >= 1);
+      assert.equal(byFp[0].item, 'Nails');
+    });
+
     it('getItemInstanceCount returns correct count', () => {
       const snapshot = {
         players: new Map([

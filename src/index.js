@@ -799,21 +799,27 @@ client.once(Events.ClientReady, async (readyClient) => {
   // ── Web map server ──────────────────────────────────────────
   const webMapPort = parseInt(process.env.WEB_MAP_PORT, 10);
   if (webMapPort) {
-    try {
-      if (!config.discordClientSecret) {
-        console.warn('[BOT] Web map starting WITHOUT Discord OAuth — all routes unprotected');
+    if (!config.discordClientSecret && !process.env.WEB_PANEL_ALLOW_NO_AUTH) {
+      setStatus('WebMap', '⚠️ Requires Discord OAuth (set DISCORD_OAUTH_SECRET + WEB_MAP_CALLBACK_URL)');
+      console.warn('[BOT] Web panel requires Discord OAuth — set DISCORD_OAUTH_SECRET and WEB_MAP_CALLBACK_URL in .env');
+      console.warn('[BOT] To run without auth (dev only), set WEB_PANEL_ALLOW_NO_AUTH=true');
+    } else {
+      try {
+        if (!config.discordClientSecret) {
+          console.warn('[BOT] Web panel starting WITHOUT Discord OAuth — all routes unprotected (dev mode)');
+        }
+        webMapServer = new WebMapServer(readyClient, { db, scheduler: serverScheduler, saveService });
+        await webMapServer.start();
+        setStatus('WebMap', `🟢 Running on http://localhost:${webMapPort}`);
+        console.log(`[BOT] Web panel started: http://localhost:${webMapPort}`);
+      } catch (err) {
+        setStatus('WebMap', `⚠️ Failed to start: ${err.message}`);
+        console.error('[BOT] Web panel failed to start:', err.message);
       }
-      webMapServer = new WebMapServer(readyClient, { db, scheduler: serverScheduler, saveService });
-      await webMapServer.start();
-      setStatus('WebMap', `🟢 Running on http://localhost:${webMapPort}`);
-      console.log(`[BOT] Web map server started: http://localhost:${webMapPort}`);
-    } catch (err) {
-      setStatus('WebMap', `⚠️ Failed to start: ${err.message}`);
-      console.error('[BOT] Web map server failed to start:', err.message);
     }
   } else {
     setStatus('WebMap', '⚫ Disabled (no WEB_MAP_PORT)');
-    console.log('[BOT] Web map disabled — set WEB_MAP_PORT in .env to enable');
+    console.log('[BOT] Web panel disabled — set WEB_MAP_PORT in .env to enable');
   }
 
   // ── Stdin console (for headless hosts like Bisect) ──────────

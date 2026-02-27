@@ -1204,7 +1204,7 @@ class HumanitZDB {
       'SELECT COUNT(*) as count FROM item_instances WHERE lost = 0'
     );
     this._stmts.searchItemInstances = this._db.prepare(
-      'SELECT * FROM item_instances WHERE item LIKE ? AND lost = 0 ORDER BY item LIMIT ?'
+      'SELECT * FROM item_instances WHERE (item LIKE ? OR fingerprint LIKE ?) AND lost = 0 ORDER BY item LIMIT ?'
     );
     this._stmts.purgeOldLostItems = this._db.prepare(
       'DELETE FROM item_instances WHERE lost = 1 AND lost_at < datetime(\'now\', ?)'
@@ -1255,7 +1255,7 @@ class HumanitZDB {
       'SELECT COUNT(*) as count FROM item_groups WHERE lost = 0'
     );
     this._stmts.searchItemGroups = this._db.prepare(
-      'SELECT * FROM item_groups WHERE item LIKE ? AND lost = 0 ORDER BY item LIMIT ?'
+      'SELECT * FROM item_groups WHERE (item LIKE ? OR fingerprint LIKE ?) AND lost = 0 ORDER BY item LIMIT ?'
     );
     this._stmts.purgeOldLostGroups = this._db.prepare(
       'DELETE FROM item_groups WHERE lost = 1 AND lost_at < datetime(\'now\', ?)'
@@ -1337,11 +1337,20 @@ class HumanitZDB {
     this._stmts.getRecentActivity = this._db.prepare(
       'SELECT * FROM activity_log ORDER BY created_at DESC, id DESC LIMIT ?'
     );
+    this._stmts.getRecentActivityPaged = this._db.prepare(
+      'SELECT * FROM activity_log ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?'
+    );
     this._stmts.getActivityByCategory = this._db.prepare(
       'SELECT * FROM activity_log WHERE category = ? ORDER BY created_at DESC, id DESC LIMIT ?'
     );
+    this._stmts.getActivityByCategoryPaged = this._db.prepare(
+      'SELECT * FROM activity_log WHERE category = ? ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?'
+    );
     this._stmts.getActivityByActor = this._db.prepare(
       'SELECT * FROM activity_log WHERE actor = ? ORDER BY created_at DESC, id DESC LIMIT ?'
+    );
+    this._stmts.getActivityByActorPaged = this._db.prepare(
+      'SELECT * FROM activity_log WHERE actor = ? ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?'
     );
     this._stmts.getActivitySince = this._db.prepare(
       'SELECT * FROM activity_log WHERE created_at >= ? ORDER BY created_at ASC, id ASC'
@@ -1370,6 +1379,9 @@ class HumanitZDB {
     `);
     this._stmts.getRecentChat = this._db.prepare(
       'SELECT * FROM chat_log ORDER BY created_at DESC, id DESC LIMIT ?'
+    );
+    this._stmts.searchChat = this._db.prepare(
+      'SELECT * FROM chat_log WHERE (message LIKE ? OR player_name LIKE ?) ORDER BY created_at DESC, id DESC LIMIT ?'
     );
     this._stmts.getChatSince = this._db.prepare(
       'SELECT * FROM chat_log WHERE created_at >= ? ORDER BY created_at ASC, id ASC'
@@ -2282,7 +2294,8 @@ class HumanitZDB {
   }
 
   searchItemInstances(query, limit = 50) {
-    return this._stmts.searchItemInstances.all(`%${query}%`, limit);
+    const like = `%${query}%`;
+    return this._stmts.searchItemInstances.all(like, like, limit);
   }
 
   purgeOldLostItems(age = '-30 days') {
@@ -2374,7 +2387,8 @@ class HumanitZDB {
   }
 
   searchItemGroups(query, limit = 50) {
-    return this._stmts.searchItemGroups.all(`%${query}%`, limit);
+    const like = `%${query}%`;
+    return this._stmts.searchItemGroups.all(like, like, limit);
   }
 
   purgeOldLostGroups(age = '-30 days') {
@@ -2579,17 +2593,20 @@ class HumanitZDB {
   }
 
   /** Get the most recent N activity entries. */
-  getRecentActivity(limit = 50) {
+  getRecentActivity(limit = 50, offset = 0) {
+    if (offset > 0) return this._stmts.getRecentActivityPaged.all(limit, offset).map(_parseActivityRow);
     return this._stmts.getRecentActivity.all(limit).map(_parseActivityRow);
   }
 
   /** Get recent activity for a specific category. */
-  getActivityByCategory(category, limit = 50) {
+  getActivityByCategory(category, limit = 50, offset = 0) {
+    if (offset > 0) return this._stmts.getActivityByCategoryPaged.all(category, limit, offset).map(_parseActivityRow);
     return this._stmts.getActivityByCategory.all(category, limit).map(_parseActivityRow);
   }
 
   /** Get recent activity for a specific actor (container name, steam ID, etc.). */
-  getActivityByActor(actor, limit = 50) {
+  getActivityByActor(actor, limit = 50, offset = 0) {
+    if (offset > 0) return this._stmts.getActivityByActorPaged.all(actor, limit, offset).map(_parseActivityRow);
     return this._stmts.getActivityByActor.all(actor, limit).map(_parseActivityRow);
   }
 
@@ -2651,6 +2668,12 @@ class HumanitZDB {
   /** Get the most recent N chat entries. */
   getRecentChat(limit = 50) {
     return this._stmts.getRecentChat.all(limit);
+  }
+
+  /** Search chat messages by text or player name. */
+  searchChat(query, limit = 200) {
+    const pattern = '%' + query + '%';
+    return this._stmts.searchChat.all(pattern, pattern, limit);
   }
 
   /** Get all chat since a given ISO timestamp. */

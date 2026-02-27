@@ -89,16 +89,15 @@ class WebMapServer {
       res.setHeader('X-Frame-Options', 'DENY');
       res.setHeader('X-XSS-Protection', '1; mode=block');
       res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
-      // CSP: allow self + CDN scripts/styles used by the panel frontend
-      // unsafe-inline required for Tailwind config block and inline onclick handlers
-      // Will tighten to nonce-based CSP during web panel redesign
+      // CSP: allow self + CDN scripts/styles + Google Fonts used by the panel frontend
+      // unsafe-inline required for Tailwind config block
       res.setHeader('Content-Security-Policy', [
         "default-src 'self'",
-        "script-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com https://unpkg.com",
-        "style-src 'self' 'unsafe-inline' https://unpkg.com",
+        "script-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com https://unpkg.com https://cdn.jsdelivr.net",
+        "style-src 'self' 'unsafe-inline' https://unpkg.com https://fonts.googleapis.com",
         "img-src 'self' https://cdn.discordapp.com data: blob:",
         "connect-src 'self'",
-        "font-src 'self'",
+        "font-src 'self' https://fonts.gstatic.com",
         "frame-ancestors 'none'",
       ].join('; '));
       res.removeHeader('X-Powered-By');
@@ -597,10 +596,10 @@ class WebMapServer {
           inventory: _cleanInventorySlots(data.inventory),
           backpackItems: _cleanInventorySlots(data.backpackItems),
 
-          // Recipes & skills (cleaned)
-          craftingRecipes: (data.craftingRecipes || []).map(r => cleanItemName(r)),
-          buildingRecipes: (data.buildingRecipes || []).map(r => cleanItemName(r)),
-          unlockedSkills: (data.unlockedSkills || []).map(s => cleanItemName(s)),
+          // Recipes & skills (cleaned — cleanItemArray filters out hex GUIDs)
+          craftingRecipes: cleanItemArray(data.craftingRecipes || []),
+          buildingRecipes: cleanItemArray(data.buildingRecipes || []),
+          unlockedSkills: cleanItemArray(data.unlockedSkills || []),
 
           // Lore
           lore: data.lore || [],
@@ -952,6 +951,17 @@ class WebMapServer {
         result.serverState = 'offline';
       }
 
+      // Fallback: maxPlayers from server settings if RCON didn't provide it
+      if (!result.maxPlayers) {
+        try {
+          const settingsFile = path.join(DATA_DIR, 'server-settings.json');
+          if (fs.existsSync(settingsFile)) {
+            const settings = JSON.parse(fs.readFileSync(settingsFile, 'utf8'));
+            if (settings.MaxPlayers) result.maxPlayers = parseInt(settings.MaxPlayers, 10) || null;
+          }
+        } catch { /* ignore */ }
+      }
+
       // System resources (SSH or Pterodactyl)
       try {
         const resources = await serverResources.getResources();
@@ -1040,17 +1050,18 @@ class WebMapServer {
       if (!this._db) return res.json({ events: [] });
 
       const limit = Math.min(parseInt(req.query.limit, 10) || 50, 500);
+      const offset = Math.max(parseInt(req.query.offset, 10) || 0, 0);
       const type = req.query.type || '';
       const actor = req.query.actor || '';
 
       try {
         let events;
         if (actor) {
-          events = this._db.getActivityByActor(actor, limit);
+          events = this._db.getActivityByActor(actor, limit, offset);
         } else if (type) {
-          events = this._db.getActivityByCategory(type, limit);
+          events = this._db.getActivityByCategory(type, limit, offset);
         } else {
-          events = this._db.getRecentActivity(limit);
+          events = this._db.getRecentActivity(limit, offset);
         }
 
         // Resolve steam IDs to player names + clean UE4 blueprint names
@@ -1393,6 +1404,64 @@ class WebMapServer {
       }
     });
 
+    // ── Panel: Entity lookup (survivor+) — lightweight reference data for info popups ──
+    app.get('/api/panel/lookup/:type/:name', requireTier('survivor'), rateLimit(5000, 20), (req, res) => {
+      if (!this._db) return res.json({ found: false });
+      const type = req.params.type;
+      const name = decodeURIComponent(req.params.name || '');
+      if (!name) return res.json({ found: false });
+
+      const db = this._db.db;
+      const result = { found: false, type, name, data: {} };
+
+      try {
+        // Route by type to appropriate reference/world table
+        if (type === 'item') {
+          const row = db.prepare('SELECT * FROM game_items WHERE name LIKE ? LIMIT 1').get(`%${name}%`);
+          if (row) { result.found = true; result.data = row; result.refTable = 'game_items'; }
+        } else if (type === 'structure' || type === 'building') {
+          const row = db.prepare('SELECT * FROM game_buildings WHERE name LIKE ? LIMIT 1').get(`%${name}%`);
+          if (row) { result.found = true; result.data = row; result.refTable = 'game_buildings'; }
+          if (!result.found) {
+            const wRow = db.prepare('SELECT * FROM structures WHERE type LIKE ? LIMIT 1').get(`%${name}%`);
+            if (wRow) { result.found = true; result.data = wRow; result.refTable = 'structures'; }
+          }
+        } else if (type === 'vehicle') {
+          const row = db.prepare('SELECT * FROM game_vehicles_ref WHERE name LIKE ? LIMIT 1').get(`%${name}%`);
+          if (row) { result.found = true; result.data = row; result.refTable = 'game_vehicles_ref'; }
+        } else if (type === 'animal') {
+          const row = db.prepare('SELECT * FROM game_animals WHERE name LIKE ? LIMIT 1').get(`%${name}%`);
+          if (row) { result.found = true; result.data = row; result.refTable = 'game_animals'; }
+        } else if (type === 'recipe') {
+          const row = db.prepare('SELECT * FROM game_recipes WHERE name LIKE ? LIMIT 1').get(`%${name}%`);
+          if (row) { result.found = true; result.data = row; result.refTable = 'game_recipes'; }
+        } else if (type === 'affliction') {
+          const row = db.prepare('SELECT * FROM game_afflictions WHERE name LIKE ? LIMIT 1').get(`%${name}%`);
+          if (row) { result.found = true; result.data = row; result.refTable = 'game_afflictions'; }
+        } else if (type === 'skill') {
+          const row = db.prepare('SELECT * FROM game_skills WHERE name LIKE ? LIMIT 1').get(`%${name}%`);
+          if (row) { result.found = true; result.data = row; result.refTable = 'game_skills'; }
+        } else if (type === 'container') {
+          const row = db.prepare('SELECT * FROM containers WHERE type LIKE ? LIMIT 1').get(`%${name}%`);
+          if (row) { result.found = true; result.data = row; result.refTable = 'containers'; }
+        }
+
+        // Fallback: try game_items for anything not found
+        if (!result.found) {
+          const fallback = db.prepare('SELECT * FROM game_items WHERE name LIKE ? LIMIT 1').get(`%${name}%`);
+          if (fallback) { result.found = true; result.data = fallback; result.refTable = 'game_items'; }
+        }
+
+        // Count activity log references
+        const actCount = db.prepare('SELECT COUNT(*) as c FROM activity_log WHERE details LIKE ? OR item LIKE ?').get(`%${name}%`, `%${name}%`);
+        result.activityCount = actCount?.c || 0;
+
+        res.json(result);
+      } catch (err) {
+        res.status(500).json({ error: safeError(err) });
+      }
+    });
+
     // ── Panel: Comprehensive DB query (admin only) ──
     app.get('/api/panel/db/:table', requireTier('admin'), rateLimit(10000, 15), (req, res) => {
       if (!this._db) return res.json({ rows: [], columns: [] });
@@ -1485,9 +1554,15 @@ class WebMapServer {
       if (!this._db) return res.json({ messages: [] });
 
       const limit = Math.min(parseInt(req.query.limit, 10) || 100, 1000);
+      const search = (req.query.search || '').trim();
 
       try {
-        const messages = this._db.getRecentChat(limit);
+        let messages;
+        if (search && this._db.searchChat) {
+          messages = this._db.searchChat(search, limit);
+        } else {
+          messages = this._db.getRecentChat(limit);
+        }
         res.json({ messages: messages || [] });
       } catch (err) {
         res.status(500).json({ error: safeError(err) });
@@ -1586,6 +1661,54 @@ class WebMapServer {
         }
         res.json({ ok: true, message: `Server ${action} executed` });
       });
+    });
+
+    // ── Panel: List backups ──
+    app.get('/api/panel/backups', requireTier('admin'), rateLimit(10000, 5), async (req, res) => {
+      const backups = [];
+
+      // Try Pterodactyl API first
+      try {
+        const panelApi = require('../server/panel-api');
+        if (panelApi.available) {
+          const list = await panelApi.listBackups();
+          if (list && list.length) {
+            for (const b of list) {
+              backups.push({
+                name: b.name || b.uuid,
+                uuid: b.uuid,
+                size: b.bytes || 0,
+                created: b.created_at || b.completed_at,
+                source: 'panel',
+              });
+            }
+            return res.json({ backups });
+          }
+        }
+      } catch (e) { /* panel API unavailable — fall through */ }
+
+      // Fall back to local data/backups/ directory
+      const backupsDir = path.join(DATA_DIR, 'backups');
+      try {
+        const fs = require('fs');
+        if (fs.existsSync(backupsDir)) {
+          const entries = fs.readdirSync(backupsDir, { withFileTypes: true });
+          for (const entry of entries) {
+            if (!entry.isDirectory()) continue;
+            const stat = fs.statSync(path.join(backupsDir, entry.name));
+            backups.push({
+              name: entry.name,
+              uuid: entry.name,
+              size: 0,
+              created: stat.mtime.toISOString(),
+              source: 'local',
+            });
+          }
+          backups.sort((a, b) => new Date(b.created) - new Date(a.created));
+        }
+      } catch (e) { /* directory not readable */ }
+
+      res.json({ backups });
     });
 
     // Sensitive keys that should never be exposed or written via API

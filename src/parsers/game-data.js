@@ -220,6 +220,7 @@ const {
   SKILLS: SKILL_DETAILS,
   PROFESSIONS: EXTRACTED_PROFESSIONS,
   STATISTICS,
+  STAT_CONFIG,
   CROPS: CROP_DATA,
   VEHICLES,
   CAR_UPGRADES,
@@ -247,17 +248,52 @@ const {
   getTableCleaned,
 } = extract;
 
-// ─── Challenges (from extracted STATISTICS) ─────────────────────────────────
+// ─── Challenges (from extracted STATISTICS + STAT_CONFIG) ───────────────────
 
-const CHALLENGES = Object.values(STATISTICS).map(s => ({
-  id: s.id,
-  name: s.name,
-  description: s.description,
-  category: s.category,
-  xp: s.xp,
-  skillPoint: s.skillPoint,
-  guid: s.guid,
-}));
+const _challengeMap = new Map();
+
+// Start with DT_Statistics (32 entries — legacy stat tracking)
+for (const s of Object.values(STATISTICS)) {
+  _challengeMap.set(s.id, {
+    id: s.id,
+    name: s.name,
+    description: s.description,
+    category: s.category,
+    xp: s.xp,
+    skillPoint: s.skillPoint,
+    guid: s.guid,
+    progressMax: s.progressMax,
+    source: 'statistics',
+  });
+}
+
+// Merge DT_StatConfig (67 entries — richer challenge definitions with GUIDs)
+for (const sc of Object.values(STAT_CONFIG)) {
+  if (_challengeMap.has(sc.id)) {
+    // Merge — StatConfig has better descriptions and XP values
+    const existing = _challengeMap.get(sc.id);
+    if (sc.description && !existing.description) existing.description = sc.description;
+    if (sc.xp > existing.xp) existing.xp = sc.xp;
+    if (sc.skillPoint > existing.skillPoint) existing.skillPoint = sc.skillPoint;
+    if (sc.guid && !existing.guid) existing.guid = sc.guid;
+    existing.progressMax = sc.progressMax || existing.progressMax;
+    existing.source = 'both';
+  } else {
+    _challengeMap.set(sc.id, {
+      id: sc.id,
+      name: sc.name,
+      description: sc.description,
+      category: sc.category,
+      xp: sc.xp,
+      skillPoint: sc.skillPoint,
+      guid: sc.guid,
+      progressMax: sc.progressMax,
+      source: 'stat_config',
+    });
+  }
+}
+
+const CHALLENGES = [..._challengeMap.values()];
 
 // ─── Loading tips (consumers expect array of strings) ───────────────────────
 
@@ -299,6 +335,7 @@ module.exports = {
   SKILL_DETAILS,
   EXTRACTED_PROFESSIONS,
   STATISTICS,
+  STAT_CONFIG,
   CROP_DATA,
   VEHICLES,
   CAR_UPGRADES,

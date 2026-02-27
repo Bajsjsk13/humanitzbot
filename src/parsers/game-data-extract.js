@@ -63,49 +63,56 @@ function cleanRow(row) {
 
 // ── Enum resolution ────────────────────────────────────────────────────────
 
-/** All enum maps — authoritative display names for every UE4 enum value. */
+/** All enum maps — authoritative display names for every UE4 enum value.
+ *  Cross-referenced against actual DT_ItemDatabase, DT_Buildings, DT_CraftingData,
+ *  DT_Professions, DT_Skills, DT_CarUpgrades usage — not guessed. */
 const ENUM_MAPS = {
-  // Item types (24 values)
+  // Item types (25 values — verified against DT_ItemDatabase Type field)
   'E_ItemTypes': {
-    'NewEnumerator0': 'Misc',
-    'NewEnumerator2': 'Melee',
-    'NewEnumerator3': 'Pistol',
-    'NewEnumerator4': 'Ranged',
-    'NewEnumerator5': 'Medical',
-    'NewEnumerator6': 'Drink',
-    'NewEnumerator7': 'Food',
-    'NewEnumerator8': 'Consumable',
-    'NewEnumerator9': 'Resource',
-    'NewEnumerator10': 'Tool',
-    'NewEnumerator11': 'Utility',
-    'NewEnumerator12': 'Ammo',
-    'NewEnumerator13': 'Equipment',
-    'NewEnumerator14': 'Material',
-    'NewEnumerator15': 'Trinket',
-    'NewEnumerator16': 'Repair',
-    'NewEnumerator18': 'Armor',
-    'NewEnumerator19': 'Power',
-    'NewEnumerator20': 'VehiclePart',
-    'NewEnumerator21': 'Throwable',
-    'NewEnumerator22': 'Treatment',
-    'NewEnumerator23': 'Trap',
-    'NewEnumerator24': 'Attachment',
-    'NewEnumerator25': 'SkillBook',
+    'NewEnumerator0': 'Misc',          // 357, 556, 762 (default/unset)
+    'NewEnumerator2': 'Melee',         // NailedBat, SledgeHammer, Axe
+    'NewEnumerator3': 'Pistol',        // 1911, Pistol, DesertEagle
+    'NewEnumerator4': 'Ranged',        // Bow, PumpShotgun, AK47
+    'NewEnumerator5': 'Medical',       // Bandage, BottlePainkillers, MedKit
+    'NewEnumerator6': 'Drink',         // Apple, Water, EnergyDrink
+    'NewEnumerator7': 'Food',          // Apple, PorknBeans, RawMeat
+    'NewEnumerator8': 'Consumable',    // Water, EnergyDrink, Whisky
+    'NewEnumerator9': 'Resource',      // Wrench, CarBattery, ScrapMetal
+    'NewEnumerator10': 'Tool',         // LockPick, CoffeeBag, BowlDogFood
+    'NewEnumerator11': 'Utility',      // RepairKit, FuelCan, EmptyFuelCan
+    'NewEnumerator12': 'Ammo',         // 357, 556, 762 (ammo variant)
+    'NewEnumerator13': 'Equipment',    // Compass
+    'NewEnumerator14': 'Material',     // Log, CarUpgradeBumper_L1
+    'NewEnumerator15': 'Trinket',      // PocketWatch
+    'NewEnumerator16': 'Repair',       // GunRepair
+    'NewEnumerator17': 'Key',          // (reserved enum slot)
+    'NewEnumerator18': 'Armor',        // MilitaryVest, GasMask, PoliceVest
+    'NewEnumerator19': 'Power',        // Battery, PowerBattery
+    'NewEnumerator20': 'VehiclePart',  // Jack
+    'NewEnumerator21': 'Throwable',    // Fireworks
+    'NewEnumerator22': 'Treatment',    // Treatment
+    'NewEnumerator23': 'Trap',         // Mine, BasicDiyMine, BearTrap
+    'NewEnumerator24': 'Attachment',   // GasFilter, Heatpack
+    'NewEnumerator25': 'SkillBook',    // SBookElectricity, SBookApocWeapons
   },
 
-  // Item specific sub-types (11 values)
+  // Item specific sub-types (15 values — verified against DT_ItemDatabase SpecificType field)
   'E_SpecificType': {
-    'NewEnumerator0': 'None',
-    'NewEnumerator1': 'Rifle',
-    'NewEnumerator2': 'Shotgun',
-    'NewEnumerator3': 'SMG',
-    'NewEnumerator4': 'Bow',
-    'NewEnumerator7': 'Crossbow',
-    'NewEnumerator8': 'Battery',
-    'NewEnumerator9': 'Fuel',
-    'NewEnumerator11': 'Scope',
-    'NewEnumerator13': 'Backpack',
-    'NewEnumerator14': 'Sling',
+    'NewEnumerator0': 'Vehicle Part',  // CarBattery, FuelPump, FanBelt, StarterMotor
+    'NewEnumerator1': 'Energy Drink',  // EnergyDrink, EnergyDrink2
+    'NewEnumerator2': 'Alcohol',       // Whisky, Beer, Mead, Vodka
+    'NewEnumerator3': 'Blunt',         // NailedBat, SledgeHammer, Hammer, Shovel
+    'NewEnumerator4': 'Blade',         // Axe, Knife, SawBladeBat, Hatchet
+    'NewEnumerator5': 'None',          // (unused)
+    'NewEnumerator6': 'None',          // (unused)
+    'NewEnumerator7': 'Vegetable',     // Rice, TomatoSoup, Carrot, Potato
+    'NewEnumerator8': 'Fruit',         // Apple
+    'NewEnumerator9': 'Medicine',      // MedKit, PainKillers, WaterTabs
+    'NewEnumerator10': 'None',         // (unused)
+    'NewEnumerator11': 'Dirty Water',  // DirtyWater
+    'NewEnumerator12': 'None',         // (unused)
+    'NewEnumerator13': 'None',         // 357, 556, 762, 1911 (default)
+    'NewEnumerator14': 'Meat',         // PorknBeans, RawMeat, Tuna, CookedMeat
   },
 
   // Clothing/wear position (8 values)
@@ -120,86 +127,91 @@ const ENUM_MAPS = {
     'NewEnumerator8': 'Back',
   },
 
-  // Build categories (6 values)
+  // Build categories (6 values — verified against DT_Buildings Category field)
   'E_BuildCategory': {
-    'NewEnumerator0': 'Crafting',
-    'NewEnumerator1': 'Structure',
-    'NewEnumerator2': 'Farming',
-    'NewEnumerator3': 'Storage',
-    'NewEnumerator4': 'Power',
-    'NewEnumerator5': 'Defence',
+    'NewEnumerator0': 'Crafting',      // Campfire, ChemistryStation, WorkbenchLVL1
+    'NewEnumerator1': 'Structure',     // WoodFloor, LogWall, MetalBarbWall
+    'NewEnumerator2': 'Farming',       // FarmPlot, CropBed, CropPlot, SpawnPoint
+    'NewEnumerator3': 'Storage',       // StorageContainer, WeaponsCrate, CupboardStorage
+    'NewEnumerator4': 'Power',         // Generator, LampPost, ChainlinkFenceElectrified
+    'NewEnumerator5': 'Defence',       // BarbDefence, Stakes, SimpleTrap, FishingTrap
   },
 
-  // Crafting stations (14 values)
+  // Crafting stations (15 values — verified against DT_CraftingData CraftingStation field)
   'E_CraftingStation': {
-    'NewEnumerator0': 'Inventory',
-    'NewEnumerator1': 'Campfire',
-    'NewEnumerator3': 'Workbench',
-    'NewEnumerator4': 'Chemistry Station',
-    'NewEnumerator5': 'Cooking Stove',
-    'NewEnumerator6': 'Melee Bench',
-    'NewEnumerator7': 'Weapons Bench',
-    'NewEnumerator8': 'Ammo Bench',
-    'NewEnumerator9': 'Table Saw',
-    'NewEnumerator10': 'Furnace',
-    'NewEnumerator11': 'Fat Converter',
-    'NewEnumerator12': 'Tailoring Bench',
-    'NewEnumerator13': 'Tanning Rack',
-    'NewEnumerator14': 'Cement Mixer',
+    'NewEnumerator0': 'Inventory',     // NewRow, WoodBow, Bait
+    'NewEnumerator1': 'Campfire',      // Arrow, FireArrow, CrossBowBolt
+    'NewEnumerator2': 'Distiller',     // (no recipes currently use this)
+    'NewEnumerator3': 'Cooking Stove', // CabbageSoup, CarrotStew, MeatCarrotStew
+    'NewEnumerator4': 'Workbench',     // Water, Canteen1, CookedMeat
+    'NewEnumerator5': 'Chemistry Station', // Treatment, MedKit, PainKillers
+    'NewEnumerator6': 'Fat Converter', // FuelCan, Whisky, Mead
+    'NewEnumerator7': 'Melee Bench',   // BrassCasing, IronRefined
+    'NewEnumerator8': 'Ammo Bench',    // 357, 556, 762
+    'NewEnumerator9': 'Table Saw',     // Oil
+    'NewEnumerator10': 'Furnace',      // Axe, Hammer, Knife
+    'NewEnumerator11': 'Tanning Rack', // HideBearDried, HideWolfDried
+    'NewEnumerator12': 'Tailoring Bench', // DeerskinShirt, DeerskinPants
+    'NewEnumerator13': 'Salting Table', // SaltedMeat, SaltedPerch, SaltedPIke
+    'NewEnumerator14': 'Cement Mixer', // Cement
   },
 
-  // Resource types for building costs (40 values)
+  // Resource types for crafting/building costs (42 values — verified against actual item names)
   'E_ResourceType': {
-    'NewEnumerator0': 'Wood',
-    'NewEnumerator1': 'Metal',
-    'NewEnumerator2': 'Nails',
-    'NewEnumerator3': 'Rope',
-    'NewEnumerator4': 'Tape',
-    'NewEnumerator5': 'Fabric',
-    'NewEnumerator6': 'Stone',
-    'NewEnumerator8': 'Clay',
-    'NewEnumerator9': 'Cement',
-    'NewEnumerator10': 'Glass',
-    'NewEnumerator11': 'Electronics',
-    'NewEnumerator13': 'Wire',
-    'NewEnumerator14': 'Pipe',
-    'NewEnumerator15': 'Fuel',
-    'NewEnumerator16': 'Battery',
-    'NewEnumerator17': 'Lightbulb',
-    'NewEnumerator18': 'Brick',
-    'NewEnumerator20': 'Plank',
-    'NewEnumerator21': 'Glue',
-    'NewEnumerator22': 'Scrap Metal',
-    'NewEnumerator23': 'Barbed Wire',
-    'NewEnumerator24': 'Tarp',
-    'NewEnumerator25': 'Sand',
-    'NewEnumerator26': 'Concrete',
-    'NewEnumerator27': 'Leather',
-    'NewEnumerator28': 'Paint',
-    'NewEnumerator29': 'Rubber',
-    'NewEnumerator30': 'Plastic',
-    'NewEnumerator31': 'Springs',
-    'NewEnumerator32': 'Gears',
-    'NewEnumerator33': 'Bolts',
-    'NewEnumerator34': 'Hinges',
-    'NewEnumerator35': 'Chain',
-    'NewEnumerator36': 'Copper Wire',
-    'NewEnumerator37': 'Solar Panel',
-    'NewEnumerator38': 'Circuit Board',
-    'NewEnumerator39': 'Motor',
-    'NewEnumerator40': 'Turbine',
-    'E_MAX': 'MAX',
+    'NewEnumerator0': 'Wood',              // Wood
+    'NewEnumerator1': 'Rock',              // Rock
+    'NewEnumerator2': 'Ammo',              // 357, 556, 762
+    'NewEnumerator3': 'Scrap Metal',       // ScrapMetal
+    'NewEnumerator4': 'Rope',              // Rope
+    'NewEnumerator5': 'Log',               // Log
+    'NewEnumerator6': 'Nails',             // Nails
+    'NewEnumerator8': 'Sticks',            // Sticks
+    'NewEnumerator9': 'Tarp',              // Tarp
+    'NewEnumerator10': 'Car Battery',      // CarBattery
+    'NewEnumerator11': 'Electronics',      // Electronics
+    'NewEnumerator13': 'Sheet Metal',      // SheetMetal
+    'NewEnumerator14': 'Oil',              // Oil
+    'NewEnumerator15': 'Fuel Can',         // FuelCan
+    'NewEnumerator16': 'Barb Wire',        // Barbwire
+    'NewEnumerator17': 'Electrical Cable', // ElectricalCable
+    'NewEnumerator18': 'Empty Jar',        // EmptyJar
+    'NewEnumerator20': 'Cement',           // Cement
+    'NewEnumerator21': 'Refined Iron',     // IronRefined
+    'NewEnumerator22': 'Hose',             // Hose
+    'NewEnumerator23': 'Funnel',           // Funnel
+    'NewEnumerator24': 'Gun Parts',        // Gunparts
+    'NewEnumerator25': 'Pollen Trap',      // PollenTrap
+    'NewEnumerator26': 'Microphone',       // Microphone
+    'NewEnumerator27': 'Generator Engine', // GennyEngine
+    'NewEnumerator28': 'Thermostat',       // Thermostat, Rod, Reel
+    'NewEnumerator29': 'Compressor',       // Compressor
+    'NewEnumerator30': 'Element',          // Element
+    'NewEnumerator31': 'Jump Leads',       // JumpLeads
+    'NewEnumerator32': 'Battery Charger',  // BatteryCharger
+    'NewEnumerator33': 'Water Barrel',     // WaterBarrel, Heater
+    'NewEnumerator34': 'Bear Hide',        // HideBearDried
+    'NewEnumerator35': 'Wolf Hide',        // HideWolfDried
+    'NewEnumerator36': 'Deer Hide',        // HideDeerDried
+    'NewEnumerator37': 'Alarm Clock',      // AlarmClock
+    'NewEnumerator38': 'Grenade',          // Grenade
+    'NewEnumerator39': 'Thread',           // Thread
+    'NewEnumerator40': 'Pump Shotgun',     // PumpShotgun
+    'NewEnumerator41': 'Reserved',         // (unused)
   },
 
-  // Car upgrade types (7 values)
+  // Car upgrade types (11 values — verified against DT_CarUpgrades Type field)
   'E_CarUpgradeTypes': {
-    'NewEnumerator0': 'Armor Plating',
-    'NewEnumerator1': 'Bull Bar',
-    'NewEnumerator4': 'Storage',
-    'NewEnumerator5': 'Tire',
-    'NewEnumerator7': 'Engine',
-    'NewEnumerator8': 'Suspension',
-    'NewEnumerator9': 'Exhaust',
+    'NewEnumerator0': 'Front Bumper',    // CarUpgradeBumper_L1-L3
+    'NewEnumerator1': 'Rear Bumper',     // CarUpgradeRear_L1-L3
+    'NewEnumerator2': 'Reserved',        // (unused)
+    'NewEnumerator3': 'Reserved',        // (unused)
+    'NewEnumerator4': 'Storage',         // CarUpgradeStorage_L1-L3
+    'NewEnumerator5': 'Wheels',          // CarTire, BadCarTire, CarUpgradeWheels_L1-L3
+    'NewEnumerator6': 'Reserved',        // (unused)
+    'NewEnumerator7': 'Window Left',     // CarUpgradeWindowL_L1-L3
+    'NewEnumerator8': 'Window Right',    // CarUpgradeWindowR_L1-L3
+    'NewEnumerator9': 'Windshield',      // CarUpgradeWindshield_L1-L3
+    'NewEnumerator10': 'Reserved',       // (unused)
   },
 
   // Animal types (6 values)
@@ -212,31 +224,32 @@ const ENUM_MAPS = {
     'NewEnumerator5': 'Pig',
   },
 
-  // Professions (14 values — from DT_Professions + items/recipes)
+  // Professions (17 enum values, 12 active — verified against DT_Professions Perk field)
   'Enum_Professions': {
-    'NewEnumerator0': 'Unemployed',
-    'NewEnumerator1': 'Mechanic',
-    'NewEnumerator2': 'Boxer',
-    'NewEnumerator3': 'Farmer',
-    'NewEnumerator6': 'Outdoorsman',
-    'NewEnumerator7': 'Chemist',
-    'NewEnumerator9': 'EMT',
-    'NewEnumerator10': 'Thief',
-    'NewEnumerator12': 'Fire Fighter',
-    'NewEnumerator13': 'Car Salesman',
-    'NewEnumerator14': 'Electrical Engineer',
-    'NewEnumerator15': 'Military Veteran',
-    'NewEnumerator16': 'Chef',
-    'NewEnumerator17': 'Builder',
+    'NewEnumerator0': 'Unemployed',           // Unemployed
+    'NewEnumerator1': 'Amateur Boxer',        // Boxer
+    'NewEnumerator2': 'Farmer',               // Farmer
+    'NewEnumerator3': 'Mechanic',             // Mechanic
+    'NewEnumerator4': 'Reserved',             // (unused slot)
+    'NewEnumerator5': 'Reserved',             // (unused slot)
+    'NewEnumerator6': 'Reserved',             // (unused slot)
+    'NewEnumerator7': 'Reserved',             // (unused slot)
+    'NewEnumerator8': 'Reserved',             // (unused slot)
+    'NewEnumerator9': 'Car Salesman',         // CarSalesman
+    'NewEnumerator10': 'Outdoorsman',         // OutDoorsMan
+    'NewEnumerator12': 'Chemist',             // Chemist
+    'NewEnumerator13': 'EMT',                 // EMT
+    'NewEnumerator14': 'Military Veteran',    // MilitaryVet
+    'NewEnumerator15': 'Thief',               // Thief
+    'NewEnumerator16': 'Fire Fighter',        // FireFighter
+    'NewEnumerator17': 'Electrical Engineer', // ElectricalEngineer
   },
 
-  // Skill categories (3 in-game + 2 reserved)
+  // Skill categories (3 values — verified against DT_Skills Category field cross-ref)
   'Enum_SkillCategories': {
-    'NewEnumerator0': 'Combat',
-    'NewEnumerator1': 'Survival',
-    'NewEnumerator2': 'Stealth',
-    'NewEnumerator3': 'Crafting',
-    'NewEnumerator4': 'Social',
+    'NewEnumerator0': 'Survival',  // Sprinter, Athlete, MasterChef, DeepPockets, LumberJack, etc.
+    'NewEnumerator1': 'Crafting',  // LockPicker, BirdWatcher, Resourceful, BaseDefence, HACKER, etc.
+    'NewEnumerator2': 'Combat',    // Fighter, Homerun, BladeMaster, SteadyAim, BowMan, RifleMan, etc.
   },
 
   // Skill book types
@@ -245,17 +258,80 @@ const ENUM_MAPS = {
     'NewEnumerator1': 'Skill',
   },
 
-  // Stat/challenge categories
+  // Stat/challenge categories (4 values — verified against DT_StatConfig/DT_Statistics)
   'E_StatCat': {
-    'NewEnumerator0': 'Objective',
-    'NewEnumerator1': 'Combat',
-    'NewEnumerator2': 'Quest',
+    'NewEnumerator0': 'Objective',  // PowerPlant, RadioTower, etc.
+    'NewEnumerator1': 'Combat',     // Kill milestones, headshots, etc.
+    'NewEnumerator2': 'Quest',      // FirstQuest, 5Quests, 10Quests
+    'NewEnumerator3': 'Survival',   // Fishing, crafting, exploration
   },
 
   // Mini-quest requirement types
   'E_MiniRequired': {
     'NewEnumerator0': 'Item',
     'NewEnumerator1': 'Kill',
+  },
+
+  // Clan ranks (5 values)
+  'E_ClanRank': {
+    'NewEnumerator0': 'Member',
+    'NewEnumerator1': 'Officer',
+    'NewEnumerator2': 'Leader',
+    'NewEnumerator3': 'Elder',
+    'NewEnumerator4': 'Recruit',
+  },
+
+  // Dog commands (6 values)
+  'E_DogCommand': {
+    'NewEnumerator0': 'Follow',
+    'NewEnumerator1': 'Stay',
+    'NewEnumerator2': 'Attack',
+    'NewEnumerator3': 'Guard',
+    'NewEnumerator4': 'Patrol',
+    'NewEnumerator5': 'Dismiss',
+  },
+
+  // Quest status (4 values)
+  'E_QuestStatus': {
+    'NewEnumerator0': 'Available',
+    'NewEnumerator1': 'Active',
+    'NewEnumerator2': 'Complete',
+    'NewEnumerator3': 'Failed',
+  },
+
+  // Character start perks / professions (9 values)
+  'Enum_CharacterStartPerk': {
+    'NewEnumerator0': 'None',
+    'NewEnumerator1': 'Strong',
+    'NewEnumerator2': 'Fast',
+    'NewEnumerator3': 'Quiet',
+    'NewEnumerator4': 'Tough',
+    'NewEnumerator5': 'Smart',
+    'NewEnumerator6': 'Lucky',
+    'NewEnumerator7': 'Resourceful',
+    'NewEnumerator8': 'Hardy',
+  },
+
+  // Inventory slot types (10 values)
+  'E_InvSlotType': {
+    'NewEnumerator0': 'Equipment',
+    'NewEnumerator1': 'Quickslot',
+    'NewEnumerator2': 'Pocket',
+    'NewEnumerator3': 'Backpack',
+    'NewEnumerator4': 'Container',
+    'NewEnumerator5': 'Ground',
+    'NewEnumerator6': 'Vehicle',
+    'NewEnumerator7': 'Hotbar',
+    'NewEnumerator8': 'Clothing',
+    'NewEnumerator9': 'Trade',
+  },
+
+  // Container slot sizes (4 values)
+  'E_ContainerSlots': {
+    'NewEnumerator0': 'Medium',
+    'NewEnumerator1': 'Large',
+    'NewEnumerator2': 'Small',
+    'NewEnumerator3': 'Extra Large',
   },
 };
 
@@ -664,6 +740,31 @@ function extractProfessions() {
 
 function extractStatistics() {
   const raw = getTable('DT_Statistics');
+  const stats = {};
+  for (const [id, row] of Object.entries(raw)) {
+    const c = cleanRow(row);
+    stats[id] = {
+      id,
+      guid: c.ID || '',
+      category: resolveEnum(c.Category),
+      categoryRaw: c.Category || '',
+      name: c.Name || id,
+      description: c.Descriptionn || c.Description || '',
+      progressMin: c.Progress?.x ?? 0,
+      progressMax: c.Progress?.y ?? 1,
+      xp: c.XP ?? 0,
+      skillPoint: c.SkillPoint ?? 0,
+    };
+  }
+  return stats;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  STAT CONFIG / CHALLENGES — DT_StatConfig (67 detailed challenge definitions)
+// ═══════════════════════════════════════════════════════════════════════════
+
+function extractStatConfig() {
+  const raw = getTable('DT_StatConfig');
   const stats = {};
   for (const [id, row] of Object.entries(raw)) {
     const c = cleanRow(row);
@@ -1163,6 +1264,7 @@ module.exports = {
   get SKILLS()           { return cached('skills', extractSkills); },
   get PROFESSIONS()      { return cached('professions', extractProfessions); },
   get STATISTICS()       { return cached('statistics', extractStatistics); },
+  get STAT_CONFIG()      { return cached('statConfig', extractStatConfig); },
   get CROPS()            { return cached('crops', extractCrops); },
   get VEHICLES()         { return cached('vehicles', extractVehicles); },
   get VEHICLE_NAMES()    { return cached('vehicleNames', () => buildVehicleNames(module.exports.VEHICLES)); },

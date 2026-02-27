@@ -1,8 +1,7 @@
-/* HumanitZ Server Panel — panel.js v3 */
+
 (function () {
   'use strict';
 
-  // ──── State ────
   const S = {
     user: null,
     tier: 0,
@@ -20,13 +19,16 @@
     viewMode: 'admin',
     pollTimers: [],
     playerSort: { col: 'online', dir: 'desc' },
+    playerViewMode: 'table',
+    dashHistory: { online: [], events: [] },
+    sparkCharts: {},
+    dbLastResult: null,
   };
 
   const $ = (sel, ctx) => (ctx || document).querySelector(sel);
   const $$ = (sel, ctx) => [...(ctx || document).querySelectorAll(sel)];
   const el = (tag, cls, html) => { const e = document.createElement(tag); if (cls) e.className = cls; if (html != null) e.innerHTML = html; return e; };
 
-  // ──── Comprehensive setting categories (matches actual HumanitZ server keys) ────
   const SETTING_CATEGORIES = {
     Server: ['ServerName', 'MaxPlayers', 'SaveName', 'SearchID', 'Version', 'NoJoinFeedback', 'NoDeathFeedback', 'LimitedSpawns', 'Voip'],
     Gameplay: ['PVP', 'DaysPerSeason', 'StartingSeason', 'XpMultiplier', 'AirDrop', 'AirDropInterval', 'AIEvent', 'EagleEye', 'ClearInfection', 'MultiplayerSleep', 'FreezeTime', 'MaxOwnedCars', 'Territory', 'PermaDeath', 'OnDeath'],
@@ -97,18 +99,34 @@
     { value: 'vehicles', label: 'Vehicles' },
     { value: 'companions', label: 'Companions' },
     { value: 'world_horses', label: 'Horses' },
+    { value: 'dead_bodies', label: 'Dead Bodies' },
     { value: 'containers', label: 'Containers' },
+    { value: 'loot_actors', label: 'Loot Actors' },
+    { value: 'world_drops', label: 'World Drops' },
     { value: 'server_settings', label: 'Server Settings' },
     { value: 'snapshots', label: 'Snapshots' },
+    { value: 'item_instances', label: 'Item Instances' },
+    { value: 'item_groups', label: 'Item Groups' },
+    { value: 'item_movements', label: 'Item Movements' },
     { value: 'game_items', label: 'Game Items' },
+    { value: 'game_buildings', label: 'Game Buildings' },
+    { value: 'game_recipes', label: 'Game Recipes' },
+    { value: 'game_vehicles_ref', label: 'Game Vehicles' },
+    { value: 'game_loot_pools', label: 'Loot Pools' },
     { value: 'game_professions', label: 'Professions' },
     { value: 'game_afflictions', label: 'Afflictions' },
     { value: 'game_skills', label: 'Skills' },
     { value: 'game_challenges', label: 'Challenges' },
+    { value: 'game_animals', label: 'Animals' },
+    { value: 'game_server_setting_defs', label: 'Setting Definitions' },
   ];
 
-  // ──── Init ────
   document.addEventListener('DOMContentLoaded', async () => {
+    
+    if (window.lucide) lucide.createIcons();
+    
+    if (window.tippy) tippy('[data-tippy-content]', { theme: 'translucent', delay: [200, 0] });
+
     const res = await fetch('/auth/me');
     S.user = await res.json();
     S.tier = S.user.tierLevel || 0;
@@ -116,14 +134,16 @@
     else showPanel();
   });
 
-  // ══════════════════════════════════════════════════
-  //  LANDING PAGE
-  // ══════════════════════════════════════════════════
-
   function showLanding() {
     $('#landing').classList.remove('hidden');
     $('#panel').classList.add('hidden');
+    const skyBg = $('#skyline-bg');
+    if (skyBg) skyBg.classList.remove('panel-active');
     loadLanding();
+    
+    if (typeof gsap !== 'undefined') {
+      gsap.fromTo('#landing > div', { opacity: 0 }, { opacity: 1, duration: 0.3, ease: 'power2.out' });
+    }
   }
 
   async function loadLanding() {
@@ -132,7 +152,7 @@
       const d = await r.json();
       const p = d.primary;
 
-      $('#landing-server-name').textContent = p.name || 'HumanitZ Server';
+      $('#landing-server-name').textContent = p.rconName || p.name || 'HumanitZ Server';
 
       const isOn = p.status === 'online';
       const dot = $('#ls-status-dot');
@@ -213,13 +233,15 @@
     }
   }
 
-  // ══════════════════════════════════════════════════
-  //  PANEL
-  // ══════════════════════════════════════════════════
-
   function showPanel() {
     $('#landing').classList.add('hidden');
     $('#panel').classList.remove('hidden');
+    const skyBg = $('#skyline-bg');
+    if (skyBg) skyBg.classList.add('panel-active');
+
+    if (typeof gsap !== 'undefined') {
+      gsap.fromTo('#sidebar', { x: -12, opacity: 0 }, { x: 0, opacity: 1, duration: 0.25, ease: 'power2.out' });
+    }
 
     if (S.user.avatar) {
       var av = $('#user-avatar');
@@ -254,12 +276,14 @@
       var chatInput = $('#chat-msg-input');
       if (chatInput) chatInput.addEventListener('keydown', function(e) { if (e.key === 'Enter') sendChat(); });
     }
+    var chatSearchInput = $('#chat-search');
+    if (chatSearchInput) chatSearchInput.addEventListener('input', debounce(loadChat, 400));
 
     var rconSendBtn = $('#rcon-send-btn');
     if (rconSendBtn) {
       rconSendBtn.addEventListener('click', function() { sendRcon(); });
       var rconInput = $('#rcon-input');
-      if (rconInput) rconInput.addEventListener('keydown', function(e) { if (e.key === 'Enter') sendRcon(); });
+      if (rconInput) rconInput.addEventListener('keydown', handleConsoleKeydown);
     }
     var clearBtn = $('#console-clear-btn');
     if (clearBtn) clearBtn.addEventListener('click', function() {
@@ -285,10 +309,24 @@
       });
     }
 
+    var acWrap = $('#console-autocomplete');
+    if (acWrap) {
+      acWrap.addEventListener('click', function(e) {
+        var item = e.target.closest('.cmd-item');
+        if (!item) return;
+        var input = $('#rcon-input');
+        if (input) { input.value = item.dataset.cmd; input.focus(); }
+        hideConsoleAutocomplete();
+      });
+    }
+
     $$('[data-action]').forEach(function(btn) {
       if (btn.classList.contains('quick-cmd')) return;
       btn.addEventListener('click', function() { doPowerAction(btn.dataset.action); });
     });
+
+    var mapRefreshBtn = $('#map-refresh-btn');
+    if (mapRefreshBtn) mapRefreshBtn.addEventListener('click', refreshMapSnapshot);
 
     $$('.quick-cmd[data-cmd]').forEach(function(btn) {
       btn.addEventListener('click', async function() {
@@ -302,14 +340,29 @@
     });
 
     var ps = $('#player-search');
-    if (ps) ps.addEventListener('input', renderPlayerTable);
+    if (ps) ps.addEventListener('input', renderPlayers);
     var pso = $('#player-sort');
-    if (pso) pso.addEventListener('change', renderPlayerTable);
+    if (pso) pso.addEventListener('change', renderPlayers);
+
+    var pvTable = $('#player-view-table');
+    var pvCards = $('#player-view-cards');
+    if (pvTable) pvTable.addEventListener('click', function() {
+      S.playerViewMode = 'table';
+      pvTable.className = 'p-1.5 rounded text-accent bg-accent/10 border border-accent/20';
+      if (pvCards) pvCards.className = 'p-1.5 rounded text-muted hover:text-text transition-colors';
+      renderPlayers();
+    });
+    if (pvCards) pvCards.addEventListener('click', function() {
+      S.playerViewMode = 'cards';
+      if (pvTable) pvTable.className = 'p-1.5 rounded text-muted hover:text-text transition-colors';
+      pvCards.className = 'p-1.5 rounded text-accent bg-accent/10 border border-accent/20';
+      renderPlayers();
+    });
 
     var pmc = $('#player-modal-close');
-    if (pmc) pmc.addEventListener('click', function() { var m = $('#player-modal'); if (m) m.classList.add('hidden'); });
+    if (pmc) pmc.addEventListener('click', function() { var m = $('#player-modal'); if (m) m.classList.add('hidden'); setBreadcrumbs([{ label: TAB_LABELS[S.currentTab] || S.currentTab }]); });
     var pm = $('#player-modal');
-    if (pm) pm.addEventListener('click', function(e) { if (e.target.id === 'player-modal') e.target.classList.add('hidden'); });
+    if (pm) pm.addEventListener('click', function(e) { if (e.target.id === 'player-modal') { e.target.classList.add('hidden'); setBreadcrumbs([{ label: TAB_LABELS[S.currentTab] || S.currentTab }]); } });
 
     var mdc = $('#map-detail-close');
     if (mdc) mdc.addEventListener('click', function() { var p = $('#map-player-detail'); if (p) p.classList.add('hidden'); });
@@ -319,18 +372,17 @@
     var mso = $('#map-show-offline');
     if (mso) mso.addEventListener('change', function() { updateMapMarkers(); filterMapPlayers(); });
 
-    // Map layer toggles
     ['structures', 'vehicles', 'containers', 'companions'].forEach(function(layer) {
       var cb = $('#map-layer-' + layer);
       if (cb) cb.addEventListener('change', function() { loadMapData(); });
     });
 
     var af = $('#activity-filter');
-    if (af) af.addEventListener('change', loadActivity);
+    if (af) af.addEventListener('change', function() { resetActivityPaging(); loadActivity(); });
     var as = $('#activity-search');
-    if (as) as.addEventListener('input', loadActivity);
+    if (as) as.addEventListener('input', debounce(function() { resetActivityPaging(); loadActivity(); }, 300));
     var ad = $('#activity-date');
-    if (ad) ad.addEventListener('change', loadActivity);
+    if (ad) ad.addEventListener('change', function() { resetActivityPaging(); loadActivity(); });
 
     var cs = $('#clan-search');
     if (cs) cs.addEventListener('input', debounce(loadClans, 300));
@@ -340,7 +392,18 @@
     var ss = $('#settings-search');
     if (ss) ss.addEventListener('input', filterSettings);
     var sb = $('#settings-save-btn');
-    if (sb) sb.addEventListener('click', saveSettings);
+    if (sb) sb.addEventListener('click', showSettingsDiff);
+    var srb = $('#settings-reset-btn');
+    if (srb) srb.addEventListener('click', resetSettingsChanges);
+
+    var sdc = $('#settings-diff-close');
+    if (sdc) sdc.addEventListener('click', function() { $('#settings-diff-modal').classList.add('hidden'); });
+    var sdCancel = $('#settings-diff-cancel');
+    if (sdCancel) sdCancel.addEventListener('click', function() { $('#settings-diff-modal').classList.add('hidden'); });
+    var sdConfirm = $('#settings-diff-confirm');
+    if (sdConfirm) sdConfirm.addEventListener('click', function() { $('#settings-diff-modal').classList.add('hidden'); commitSettings(); });
+    var sdModal = $('#settings-diff-modal');
+    if (sdModal) sdModal.addEventListener('click', function(e) { if (e.target === sdModal) sdModal.classList.add('hidden'); });
 
     var dbt = $('#db-table');
     if (dbt) dbt.addEventListener('change', loadDatabase);
@@ -348,8 +411,9 @@
     if (dbs) dbs.addEventListener('input', debounce(loadDatabase, 300));
     var dbl = $('#db-limit');
     if (dbl) dbl.addEventListener('change', loadDatabase);
+    var dbCsv = $('#db-export-csv');
+    if (dbCsv) dbCsv.addEventListener('click', exportDbCsv);
 
-    // Populate DB table selector
     var dbSelect = $('#db-table');
     if (dbSelect) {
       dbSelect.innerHTML = '';
@@ -361,7 +425,6 @@
       }
     }
 
-    // Preload players for click-to-profile on any tab
     loadPlayersInBackground();
 
     switchTab('dashboard');
@@ -375,7 +438,7 @@
       S.players = d.players || [];
       S.toggles = d.toggles || {};
       S.worldBounds = d.worldBounds || null;
-    } catch (e) { /* silent */ }
+    } catch (e) {  }
   }
 
   function toggleViewMode() {
@@ -391,11 +454,55 @@
     });
   }
 
+  var TAB_LABELS = { dashboard:'Dashboard', map:'Live Map', timeline:'Timeline', players:'Players', clans:'Clans', activity:'Activity', chat:'Chat', items:'Items', console:'Console', settings:'Settings', controls:'Controls', database:'Database' };
+  S.breadcrumbs = [];
+
+  function setBreadcrumbs(crumbs) {
+    S.breadcrumbs = crumbs;
+    var bars = $$('.breadcrumb-bar');
+    bars.forEach(function(bar) {
+      if (!crumbs || crumbs.length <= 1) { bar.innerHTML = ''; return; }
+      var html = '';
+      for (var i = 0; i < crumbs.length; i++) {
+        if (i > 0) html += '<span class="breadcrumb-sep"></span>';
+        var isLast = i === crumbs.length - 1;
+        if (isLast) {
+          html += '<span class="breadcrumb-item current">' + esc(crumbs[i].label) + '</span>';
+        } else {
+          html += '<span class="breadcrumb-item" data-action="' + esc(crumbs[i].action || '') + '">' + esc(crumbs[i].label) + '</span>';
+        }
+      }
+      bar.innerHTML = html;
+    });
+  }
+
+  document.addEventListener('click', function(e) {
+    var bc = e.target.closest('.breadcrumb-item:not(.current)');
+    if (!bc) return;
+    var action = bc.dataset.action;
+    if (action === 'tab') {
+      
+      setBreadcrumbs([{ label: TAB_LABELS[S.currentTab] || S.currentTab }]);
+      
+      var pm = $('#player-modal'); if (pm) pm.classList.add('hidden');
+      var idm = $('#item-detail-modal'); if (idm) idm.classList.add('hidden');
+    } else if (action && action.startsWith('switchTab:')) {
+      switchTab(action.split(':')[1]);
+    }
+  });
+
   function switchTab(tab) {
     S.currentTab = tab;
+    setBreadcrumbs([{ label: TAB_LABELS[tab] || tab }]);
     $$('.tab-content').forEach(function(s) { s.classList.add('hidden'); });
     var tabEl = $('#tab-' + tab);
-    if (tabEl) tabEl.classList.remove('hidden');
+    if (tabEl) {
+      tabEl.classList.remove('hidden');
+      
+      if (typeof gsap !== 'undefined') {
+        gsap.fromTo(tabEl, { opacity: 0 }, { opacity: 1, duration: 0.15, ease: 'power2.out' });
+      }
+    }
     $$('.nav-link').forEach(function(l) { l.classList.toggle('active', l.dataset.tab === tab); });
 
     S.pollTimers.forEach(clearInterval);
@@ -409,15 +516,49 @@
       case 'activity': loadActivity(); break;
       case 'chat': loadChat(); S.pollTimers.push(setInterval(loadChat, 8000)); break;
       case 'settings': loadSettings(); break;
+      case 'controls': loadBackupList(); break;
       case 'database': loadDatabase(); break;
       case 'items': loadItems(); break;
       case 'timeline': initTimeline(); break;
     }
   }
 
-  // ══════════════════════════════════════════════════
-  //  DASHBOARD
-  // ══════════════════════════════════════════════════
+  function renderSparkline(canvasId, data, color) {
+    var canvas = $('#' + canvasId);
+    if (!canvas || !window.Chart) return;
+    if (S.sparkCharts[canvasId]) {
+      S.sparkCharts[canvasId].data.labels = data.map(function(_, i) { return i; });
+      S.sparkCharts[canvasId].data.datasets[0].data = data;
+      S.sparkCharts[canvasId].update('none');
+      return;
+    }
+    S.sparkCharts[canvasId] = new Chart(canvas, {
+      type: 'line',
+      data: {
+        labels: data.map(function(_, i) { return i; }),
+        datasets: [{
+          data: data,
+          borderColor: color,
+          borderWidth: 1.5,
+          pointRadius: 0,
+          tension: 0.3,
+          fill: { target: 'origin', above: color + '15' },
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        animation: false,
+        plugins: { legend: { display: false }, tooltip: { enabled: false } },
+        scales: {
+          x: { display: false },
+          y: { display: false, beginAtZero: true }
+        },
+        layout: { padding: 0 },
+        elements: { line: { borderCapStyle: 'round' } }
+      }
+    });
+  }
 
   async function loadDashboard() {
     try {
@@ -427,7 +568,7 @@
 
       var isOn = status.serverState === 'running';
       var stEl = $('#d-status');
-      if (stEl) { stEl.textContent = isOn ? 'Online' : 'Offline'; stEl.style.color = isOn ? '#34d399' : '#f87171'; }
+      if (stEl) { stEl.textContent = isOn ? 'Online' : 'Offline'; stEl.style.color = isOn ? '#6dba82' : '#c45a4a'; }
 
       var onEl = $('#d-online');
       if (onEl) onEl.textContent = stats.onlinePlayers + ' / ' + (status.maxPlayers || '?');
@@ -457,6 +598,16 @@
       var evEl = $('#d-events');
       if (evEl) evEl.textContent = fmtNum(stats.eventsToday || 0);
 
+      var maxPts = 20;
+      S.dashHistory.online.push(stats.onlinePlayers || 0);
+      S.dashHistory.events.push(stats.eventsToday || 0);
+      if (S.dashHistory.online.length > maxPts) S.dashHistory.online.shift();
+      if (S.dashHistory.events.length > maxPts) S.dashHistory.events.shift();
+      if (window.Chart && S.dashHistory.online.length > 1) {
+        renderSparkline('spark-online', S.dashHistory.online, '#6dba82');
+        renderSparkline('spark-events', S.dashHistory.events, '#d4915c');
+      }
+
       var tzEl = $('#d-tz');
       if (tzEl && status.timezone) tzEl.textContent = status.timezone;
 
@@ -470,7 +621,7 @@
           var dc = $('#dashboard-connect');
           if (dc) dc.classList.remove('hidden');
         }
-      } catch (e) { /* ignore */ }
+      } catch (e) {  }
 
       try {
         var schedRes = await fetch('/api/panel/scheduler');
@@ -481,7 +632,7 @@
           if (sc) sc.classList.remove('hidden');
           renderSchedule($('#schedule-info'), sched, 'dashboard');
         }
-      } catch (e) { /* scheduler unavailable */ }
+      } catch (e) {  }
 
       if (status.resources && S.tier >= 3 && S.viewMode === 'admin') {
         var rc = $('#resources-card');
@@ -495,15 +646,11 @@
         var chat = await feeds[1].json();
         renderActivityFeed($('#d-activity'), act.events, true);
         renderChatFeed($('#d-chat'), chat.messages, true);
-      } catch (e) { /* feeds unavailable */ }
+      } catch (e) {  }
     } catch (e) {
       console.error('Dashboard error:', e);
     }
   }
-
-  // ══════════════════════════════════════════════════
-  //  SCHEDULE RENDERER
-  // ══════════════════════════════════════════════════
 
   function renderSchedule(container, sched, context) {
     if (!container || !sched || !sched.todaySchedule) return;
@@ -530,35 +677,18 @@
       }
 
       var ps = profileSettings[pn];
-      if (ps && Object.keys(ps).length > 0) {
-        var tooltip = '<div class="sched-tooltip"><div class="sched-tooltip-title">' + esc(displayName) + ' Settings</div>';
-        for (var k in ps) {
-          if (!ps.hasOwnProperty(k)) continue;
-          tooltip += '<div class="sched-tooltip-row"><span class="stk">' + esc(humanizeSettingKey(k)) + '</span><span class="stv">' + esc(String(ps[k])) + '</span></div>';
-        }
-        tooltip += '</div>';
-        inner += tooltip;
-      }
-
       div.innerHTML = inner;
       container.appendChild(div);
 
-      // Position fixed tooltip on hover
-      (function(slotDiv) {
-        slotDiv.addEventListener('mouseenter', function() {
-          var tt = slotDiv.querySelector('.sched-tooltip');
-          if (!tt) return;
-          var rect = slotDiv.getBoundingClientRect();
-          tt.style.left = rect.left + 'px';
-          tt.style.top = (rect.bottom + 4) + 'px';
-          // Keep within viewport
-          requestAnimationFrame(function() {
-            var ttRect = tt.getBoundingClientRect();
-            if (ttRect.right > window.innerWidth - 8) tt.style.left = Math.max(8, window.innerWidth - ttRect.width - 8) + 'px';
-            if (ttRect.bottom > window.innerHeight - 8) tt.style.top = (rect.top - ttRect.height - 4) + 'px';
-          });
-        });
-      })(div);
+      if (ps && Object.keys(ps).length > 0 && typeof tippy !== 'undefined') {
+        var tipContent = '<div style="font-size:0.6875rem"><div style="font-weight:600;text-transform:uppercase;letter-spacing:0.04em;color:#c8c2b8;margin-bottom:4px">' + esc(displayName) + '</div>';
+        for (var k in ps) {
+          if (!ps.hasOwnProperty(k)) continue;
+          tipContent += '<div style="display:flex;justify-content:space-between;gap:12px;padding:1px 0"><span style="color:#5c574f">' + esc(humanizeSettingKey(k)) + '</span><span style="color:#c8c2b8;font-family:JetBrains Mono,monospace">' + esc(String(ps[k])) + '</span></div>';
+        }
+        tipContent += '</div>';
+        tippy(div, { content: tipContent, allowHTML: true, theme: 'translucent', placement: 'bottom-start', maxWidth: 280, delay: [200, 0] });
+      }
     }
   }
 
@@ -586,35 +716,36 @@
     } catch (e) { return new Date().toTimeString().slice(0, 5); }
   }
 
-  // ══════════════════════════════════════════════════
-  //  RESOURCES
-  // ══════════════════════════════════════════════════
-
   function renderResources(res, uptime) {
     var container = $('#resources-info');
     if (!container) return;
     container.innerHTML = '';
     var bars = [
-      { label: 'CPU', val: res.cpu, cls: 'cpu', fmt: (res.cpu || 0).toFixed(1) + '%' },
-      { label: 'Memory', val: res.memPercent, cls: 'mem', fmt: res.memFormatted || (res.memPercent || 0).toFixed(1) + '%' },
-      { label: 'Disk', val: res.diskPercent, cls: 'disk', fmt: res.diskFormatted || (res.diskPercent || 0).toFixed(1) + '%' },
+      { label: 'CPU', val: res.cpu, cls: 'cpu', fmt: (res.cpu || 0).toFixed(1) + '%', color: '#5b8fd4' },
+      { label: 'Memory', val: res.memPercent, cls: 'mem', fmt: res.memFormatted || (res.memPercent || 0).toFixed(1) + '%', color: '#9b72cf' },
+      { label: 'Disk', val: res.diskPercent, cls: 'disk', fmt: res.diskFormatted || (res.diskPercent || 0).toFixed(1) + '%', color: '#d4a843' },
     ];
     for (var i = 0; i < bars.length; i++) {
       var b = bars[i];
-      var row = el('div', 'space-y-1');
-      row.innerHTML = '<div class="flex justify-between text-xs"><span class="text-muted">' + b.label + '</span><span class="text-gray-300">' + b.fmt + '</span></div><div class="res-bar-track"><div class="res-bar-fill ' + b.cls + '" style="width:' + Math.min(b.val || 0, 100) + '%"></div></div>';
+      var pct = Math.min(b.val || 0, 100);
+      var row = el('div', 'space-y-1.5');
+      row.innerHTML = '<div class="flex justify-between text-xs"><span class="text-muted">' + b.label + '</span><span class="text-gray-300 font-mono text-[11px]">' + b.fmt + '</span></div><div class="res-bar-track"><div class="res-bar-fill ' + b.cls + '" style="width:0%"></div></div>';
       container.appendChild(row);
+      
+      if (typeof gsap !== 'undefined') {
+        var fill = row.querySelector('.res-bar-fill');
+        if (fill) gsap.to(fill, { width: pct + '%', duration: 0.5, ease: 'power2.out' });
+      } else {
+        var fill2 = row.querySelector('.res-bar-fill');
+        if (fill2) fill2.style.width = pct + '%';
+      }
     }
     if (uptime) {
-      var up = el('div', 'flex justify-between text-xs mt-1');
-      up.innerHTML = '<span class="text-muted">Uptime</span><span class="text-gray-300">' + esc(uptime) + '</span>';
+      var up = el('div', 'flex justify-between text-xs mt-2');
+      up.innerHTML = '<span class="text-muted">Uptime</span><span class="text-gray-300 font-mono text-[11px]">' + esc(uptime) + '</span>';
       container.appendChild(up);
     }
   }
-
-  // ══════════════════════════════════════════════════
-  //  MAP
-  // ══════════════════════════════════════════════════
 
   function initMap() {
     if (S.mapReady) return;
@@ -638,7 +769,6 @@
       updateMapMarkers();
       updateMapSidebar();
 
-      // Load extra map layers if toggled on
       var wantLayers = [];
       ['structures', 'vehicles', 'containers', 'companions', 'zombies', 'animals', 'bandits'].forEach(function(l) {
         var cb = $('#map-layer-' + l);
@@ -651,15 +781,14 @@
             var ld = await lr.json();
             updateMapWorldLayers(ld, wantLayers);
           }
-        } catch(e) { /* mapdata unavailable */ }
+        } catch(e) {  }
       } else {
-        // Clear world layers if nothing checked
+        
         clearMapWorldLayers();
       }
     } catch (e) { console.error('Map data error:', e); }
   }
 
-  // World entity layer groups
   var mapWorldLayers = {};
 
   function clearMapWorldLayers() {
@@ -677,9 +806,18 @@
       mapWorldLayers.structures = L.layerGroup();
       data.structures.forEach(function(s) {
         if (s.lat == null) return;
-        var icon = L.divIcon({ className: '', html: '<div style="width:5px;height:5px;background:#3b82f6;border-radius:1px;border:1px solid #10121e"></div>', iconSize: [5, 5], iconAnchor: [2.5, 2.5] });
+        var icon = L.divIcon({ className: '', html: '<div style="width:5px;height:5px;background:#3b82f6;border-radius:1px;border:1px solid #12100e"></div>', iconSize: [5, 5], iconAnchor: [2.5, 2.5] });
         var m = L.marker([s.lat, s.lng], { icon: icon });
-        m.bindTooltip(s.name || 'Structure', { direction: 'top', offset: [0, -4] });
+        m.bindTooltip(esc(s.name || 'Structure'), { direction: 'top', offset: [0, -4] });
+        var ownerName = s.owner && data.nameMap ? (data.nameMap[s.owner] || s.owner) : 'Unknown';
+        var hpPct = s.maxHealth ? Math.round((s.health / s.maxHealth) * 100) : 0;
+        var ownerHtml = s.owner ? '<span class="player-link" data-steam-id="' + esc(s.owner) + '">' + esc(ownerName) + '</span>' : esc(ownerName);
+        var popupHtml = '<div class="tl-popup" style="min-width:160px"><b>' + entityLink(s.name || 'Structure', 'structure') + '</b>' +
+          (s.upgrade ? '<br><span style="color:#7a746c">Level ' + s.upgrade + '</span>' : '') +
+          '<br>\u2764\ufe0f ' + hpPct + '%' +
+          '<br>\ud83d\udc64 ' + ownerHtml +
+          (s.itemCount ? '<br>\ud83d\udce6 ' + s.itemCount + ' items' : '') + '</div>';
+        m.bindPopup(popupHtml);
         m.addTo(mapWorldLayers.structures);
       });
       mapWorldLayers.structures.addTo(S.map);
@@ -689,9 +827,15 @@
       mapWorldLayers.vehicles = L.layerGroup();
       data.vehicles.forEach(function(v) {
         if (v.lat == null) return;
-        var icon = L.divIcon({ className: '', html: '<div style="width:7px;height:7px;background:#fbbf24;border-radius:1px;border:1px solid #10121e"></div>', iconSize: [7, 7], iconAnchor: [3.5, 3.5] });
+        var icon = L.divIcon({ className: '', html: '<div style="width:7px;height:7px;background:#d4a843;border-radius:1px;border:1px solid #12100e"></div>', iconSize: [7, 7], iconAnchor: [3.5, 3.5] });
         var m = L.marker([v.lat, v.lng], { icon: icon });
-        m.bindTooltip((v.name || 'Vehicle') + ' \u2764 ' + Math.round(v.health || 0) + ' \u26FD ' + (v.fuel || 0) + 'L', { direction: 'top', offset: [0, -5] });
+        m.bindTooltip(esc(v.name || 'Vehicle'), { direction: 'top', offset: [0, -5] });
+        var hpPct = v.maxHealth ? Math.round((v.health / v.maxHealth) * 100) : 0;
+        var hpColor = hpPct > 60 ? '#6dba82' : hpPct > 30 ? '#d4a843' : '#c45a4a';
+        var popupHtml = '<div class="tl-popup" style="min-width:160px"><b>' + entityLink(v.name || 'Vehicle', 'vehicle') + '</b>' +
+          '<br><span style="color:#7a746c">Health</span> <span style="color:' + hpColor + '">' + hpPct + '%</span>' +
+          '<br>\u26fd Fuel: ' + (v.fuel || 0) + 'L</div>';
+        m.bindPopup(popupHtml);
         m.addTo(mapWorldLayers.vehicles);
       });
       mapWorldLayers.vehicles.addTo(S.map);
@@ -701,9 +845,13 @@
       mapWorldLayers.containers = L.layerGroup();
       data.containers.forEach(function(c) {
         if (c.lat == null) return;
-        var icon = L.divIcon({ className: '', html: '<div style="width:4px;height:4px;background:#a855f7;border-radius:50%;border:1px solid #10121e"></div>', iconSize: [4, 4], iconAnchor: [2, 2] });
+        var icon = L.divIcon({ className: '', html: '<div style="width:4px;height:4px;background:#a855f7;border-radius:50%;border:1px solid #12100e"></div>', iconSize: [4, 4], iconAnchor: [2, 2] });
         var m = L.marker([c.lat, c.lng], { icon: icon });
-        m.bindTooltip((c.name || 'Container') + ' (' + (c.itemCount || 0) + ')', { direction: 'top', offset: [0, -4] });
+        m.bindTooltip(esc(c.name || 'Container') + ' (' + (c.itemCount || 0) + ')', { direction: 'top', offset: [0, -4] });
+        var popupHtml = '<div class="tl-popup" style="min-width:140px"><b>' + entityLink(c.name || 'Container', 'container') + '</b>' +
+          '<br>\ud83d\udce6 ' + (c.itemCount || 0) + ' items' +
+          (c.locked ? '<br>\ud83d\udd12 Locked' : '') + '</div>';
+        m.bindPopup(popupHtml);
         m.addTo(mapWorldLayers.containers);
       });
       mapWorldLayers.containers.addTo(S.map);
@@ -713,9 +861,15 @@
       mapWorldLayers.companions = L.layerGroup();
       data.companions.forEach(function(c) {
         if (c.lat == null) return;
-        var icon = L.divIcon({ className: '', html: '<div style="width:6px;height:6px;background:#ec4899;border-radius:50%;border:1px solid #10121e"></div>', iconSize: [6, 6], iconAnchor: [3, 3] });
+        var icon = L.divIcon({ className: '', html: '<div style="width:6px;height:6px;background:#ec4899;border-radius:50%;border:1px solid #12100e"></div>', iconSize: [6, 6], iconAnchor: [3, 3] });
         var m = L.marker([c.lat, c.lng], { icon: icon });
-        m.bindTooltip(c.type || 'Companion', { direction: 'top', offset: [0, -4] });
+        m.bindTooltip(esc(c.type || 'Companion'), { direction: 'top', offset: [0, -4] });
+        var ownerName = c.owner && data.nameMap ? (data.nameMap[c.owner] || c.owner) : 'Unknown';
+        var ownerHtml = c.owner ? '<span class="player-link" data-steam-id="' + esc(c.owner) + '">' + esc(ownerName) + '</span>' : esc(ownerName);
+        var popupHtml = '<div class="tl-popup" style="min-width:140px"><b>' + entityLink(c.type || 'Companion', 'animal') + '</b>' +
+          '<br>\ud83d\udc64 ' + ownerHtml +
+          (c.health != null ? '<br>\u2764\ufe0f ' + Math.round(c.health) : '') + '</div>';
+        m.bindPopup(popupHtml);
         m.addTo(mapWorldLayers.companions);
       });
       mapWorldLayers.companions.addTo(S.map);
@@ -775,10 +929,10 @@
       if (!showOffline && !p.isOnline) continue;
       if (p.lat == null || p.lng == null) continue;
 
-      var color = p.isOnline ? '#34d399' : '#64748b';
+      var color = p.isOnline ? '#6dba82' : '#7a746c';
       var icon = L.divIcon({
         className: '',
-        html: '<div style="width:10px;height:10px;border-radius:50%;background:' + color + ';border:2px solid #10121e;box-shadow:0 0 4px ' + color + '40"></div>',
+        html: '<div style="width:10px;height:10px;border-radius:50%;background:' + color + ';border:2px solid #12100e"></div>',
         iconSize: [10, 10], iconAnchor: [5, 5],
       });
 
@@ -804,7 +958,7 @@
     for (var i = 0; i < sorted.length; i++) {
       var p = sorted[i];
       var entry = el('div', 'map-player-entry');
-      entry.innerHTML = '<span class="status-dot ' + (p.isOnline ? 'online' : 'offline') + '"></span><span class="mp-name ' + (p.isOnline ? 'online' : '') + '">' + esc(p.name) + '</span>';
+      entry.innerHTML = '<span class="status-dot ' + (p.isOnline ? 'online' : 'offline') + '"></span><span class="mp-name player-link ' + (p.isOnline ? 'online' : '') + '" data-steam-id="' + esc(p.steamId || '') + '">' + esc(p.name) + '</span>';
       (function(player) {
         entry.addEventListener('click', function() {
           if (player.hasPosition && player.lat != null && S.map) S.map.setView([player.lat, player.lng], 1);
@@ -824,29 +978,31 @@
     });
   }
 
-  // Refresh button — force game save + re-poll save file + update map
-  window.refreshMapSnapshot = async function() {
+  async function refreshMapSnapshot() {
     var btn = $('#map-refresh-btn');
     if (!btn) return;
-    var orig = btn.textContent;
-    btn.textContent = '⏳ Saving…';
+    var origHTML = btn.innerHTML;
+    btn.innerHTML = '<i data-lucide="loader" class="w-3 h-3 animate-spin"></i> Saving…';
+    if (window.lucide) lucide.createIcons({ nodes: [btn] });
     btn.disabled = true;
     try {
       var r = await (typeof authFetch === 'function' ? authFetch : fetch)('/api/panel/refresh-snapshot', { method: 'POST' });
       if (r.ok) {
-        btn.textContent = '✓ Done';
-        // Reload map data after a brief pause for DB writes to settle
-        setTimeout(function() { loadMapData(); btn.textContent = orig; btn.disabled = false; }, 1000);
+        btn.innerHTML = '<i data-lucide="check" class="w-3 h-3"></i> Done';
+        if (window.lucide) lucide.createIcons({ nodes: [btn] });
+        setTimeout(function() { loadMapData(); btn.innerHTML = origHTML; if (window.lucide) lucide.createIcons({ nodes: [btn] }); btn.disabled = false; }, 1000);
       } else {
         var d = await r.json().catch(function() { return {}; });
-        btn.textContent = '✗ ' + (d.error || 'Failed');
-        setTimeout(function() { btn.textContent = orig; btn.disabled = false; }, 3000);
+        btn.innerHTML = '<i data-lucide="x" class="w-3 h-3"></i> ' + (d.error || 'Failed');
+        if (window.lucide) lucide.createIcons({ nodes: [btn] });
+        setTimeout(function() { btn.innerHTML = origHTML; if (window.lucide) lucide.createIcons({ nodes: [btn] }); btn.disabled = false; }, 3000);
       }
     } catch (e) {
-      btn.textContent = '✗ Error';
-      setTimeout(function() { btn.textContent = orig; btn.disabled = false; }, 3000);
+      btn.innerHTML = '<i data-lucide="x" class="w-3 h-3"></i> Error';
+      if (window.lucide) lucide.createIcons({ nodes: [btn] });
+      setTimeout(function() { btn.innerHTML = origHTML; if (window.lucide) lucide.createIcons({ nodes: [btn] }); btn.disabled = false; }, 3000);
     }
-  };
+  }
 
   function showMapPlayerDetail(p) {
     var panel = $('#map-player-detail');
@@ -857,10 +1013,6 @@
     panel.classList.remove('hidden');
   }
 
-  // ══════════════════════════════════════════════════
-  //  PLAYERS
-  // ══════════════════════════════════════════════════
-
   async function loadPlayers() {
     try {
       var r = await fetch('/api/players');
@@ -868,8 +1020,13 @@
       var d = await r.json();
       S.players = d.players || [];
       S.toggles = d.toggles || {};
-      renderPlayerTable();
+      renderPlayers();
     } catch (e) { console.error('Players error:', e); }
+  }
+
+  function renderPlayers() {
+    if (S.playerViewMode === 'cards') renderPlayerCards();
+    else renderPlayerTable();
   }
 
   function renderPlayerTable() {
@@ -890,7 +1047,6 @@
       });
     }
 
-    // Apply dropdown sort
     list.sort(function(a, b) {
       switch (sort) {
         case 'online': return (b.isOnline ? 1 : 0) - (a.isOnline ? 1 : 0) || (a.name || '').localeCompare(b.name || '');
@@ -903,7 +1059,6 @@
       }
     });
 
-    // Apply column header sort
     var sortCol = S.playerSort.col;
     var sortDir = S.playerSort.dir;
     if (sortCol !== 'online') {
@@ -956,12 +1111,12 @@
       var p = list[pi];
       var tr = el('tr', 'clickable');
       var healthPct = p.maxHealth > 0 ? Math.round((p.health / p.maxHealth) * 100) : (p.health || 0);
-      var healthColor = healthPct > 60 ? '#34d399' : healthPct > 30 ? '#fbbf24' : '#f87171';
+      var healthColor = healthPct > 60 ? '#6dba82' : healthPct > 30 ? '#d4a843' : '#c45a4a';
 
       tr.innerHTML = '<td><span class="status-dot ' + (p.isOnline ? 'online' : 'offline') + '"></span></td>' +
         '<td><span class="player-link">' + esc(p.name) + '</span></td>' +
         '<td class="text-muted">' + esc(p.profession || '-') + '</td>' +
-        '<td class="text-muted">' + (p.clanName ? '[' + esc(p.clanName) + ']' : '-') + '</td>' +
+        '<td class="text-muted">' + (p.clanName ? '<span class="entity-link" data-entity-table="clans" data-entity-search="' + esc(p.clanName) + '">[' + esc(p.clanName) + ']</span>' : '-') + '</td>' +
         '<td>' + fmtNum(p.zeeksKilled || 0) + '</td>' +
         '<td>' + (p.daysSurvived || 0) + '</td>' +
         '<td><span style="color:' + healthColor + '">' + healthPct + '%</span></td>' +
@@ -980,6 +1135,81 @@
     container.appendChild(table);
   }
 
+  function renderPlayerCards() {
+    var container = $('#player-list');
+    if (!container) return;
+
+    var query = ($('#player-search') ? $('#player-search').value : '').toLowerCase();
+    var sort = $('#player-sort') ? $('#player-sort').value : 'online';
+
+    var list = S.players.slice();
+
+    if (query) {
+      list = list.filter(function(p) {
+        return (p.name || '').toLowerCase().includes(query) ||
+          (p.steamId || '').includes(query) ||
+          (p.profession || '').toLowerCase().includes(query) ||
+          (p.clanName || '').toLowerCase().includes(query);
+      });
+    }
+
+    list.sort(function(a, b) {
+      switch (sort) {
+        case 'online': return (b.isOnline ? 1 : 0) - (a.isOnline ? 1 : 0) || (a.name || '').localeCompare(b.name || '');
+        case 'name': return (a.name || '').localeCompare(b.name || '');
+        case 'kills': return (b.zeeksKilled || 0) - (a.zeeksKilled || 0);
+        case 'playtime': return (b.totalPlaytime || 0) - (a.totalPlaytime || 0);
+        case 'lastSeen': return new Date(b.lastSeen || 0) - new Date(a.lastSeen || 0);
+        case 'daysSurvived': return (b.daysSurvived || 0) - (a.daysSurvived || 0);
+        default: return 0;
+      }
+    });
+
+    var grid = el('div', 'player-cards-grid');
+
+    for (var i = 0; i < list.length; i++) {
+      var p = list[i];
+      var healthPct = p.maxHealth > 0 ? Math.round((p.health / p.maxHealth) * 100) : (p.health || 0);
+      var healthColor = healthPct > 60 ? '#6dba82' : healthPct > 30 ? '#d4a843' : '#c45a4a';
+      var barWidth = Math.max(0, Math.min(100, healthPct));
+
+      var card = el('div', 'player-card');
+      if (p.isOnline) card.classList.add('is-online');
+
+      var profLabel = p.profession || 'Survivor';
+      var clanTag = p.clanName ? ' <span class="pc-clan entity-link" data-entity-table="clans" data-entity-search="' + esc(p.clanName) + '">[' + esc(p.clanName) + ']</span>' : '';
+
+      card.innerHTML =
+        '<div class="pc-header">' +
+          '<span class="status-dot ' + (p.isOnline ? 'online' : 'offline') + '"></span>' +
+          '<span class="pc-name">' + esc(p.name) + '</span>' + clanTag +
+        '</div>' +
+        '<div class="pc-profession">' + esc(profLabel) + '</div>' +
+        '<div class="pc-health">' +
+          '<div class="pc-health-bar" style="width:' + barWidth + '%;background:' + healthColor + '"></div>' +
+          '<span class="pc-health-label">' + healthPct + '%</span>' +
+        '</div>' +
+        '<div class="pc-stats">' +
+          '<div class="pc-stat"><span class="pc-stat-val">' + fmtNum(p.zeeksKilled || 0) + '</span><span class="pc-stat-lbl">Kills</span></div>' +
+          '<div class="pc-stat"><span class="pc-stat-val">' + (p.daysSurvived || 0) + '</span><span class="pc-stat-lbl">Days</span></div>' +
+          '<div class="pc-stat"><span class="pc-stat-val">' + formatPlaytime(p.totalPlaytime) + '</span><span class="pc-stat-lbl">Playtime</span></div>' +
+        '</div>';
+
+      (function(player) {
+        card.addEventListener('click', function() { showPlayerModal(player); });
+      })(p);
+
+      grid.appendChild(card);
+    }
+
+    container.innerHTML = '';
+    if (list.length === 0) {
+      container.innerHTML = '<p class="text-muted text-center py-8">No players found</p>';
+    } else {
+      container.appendChild(grid);
+    }
+  }
+
   function showPlayerModal(p) {
     var modal = $('#player-modal');
     var content = $('#player-modal-content');
@@ -987,6 +1217,16 @@
     content.innerHTML = buildPlayerDetail(p);
     content.dataset.steamId = p.steamId || '';
     modal.classList.remove('hidden');
+    
+    setBreadcrumbs([
+      { label: TAB_LABELS[S.currentTab] || S.currentTab, action: 'tab' },
+      { label: p.name || 'Player' }
+    ]);
+    
+    if (typeof gsap !== 'undefined') {
+      var inner = modal.querySelector('.bg-surface-100');
+      if (inner) gsap.fromTo(inner, { opacity: 0, y: 12 }, { opacity: 1, y: 0, duration: 0.2, ease: 'power2.out' });
+    }
   }
 
   function buildPlayerDetail(p) {
@@ -996,14 +1236,13 @@
     html += '<span class="status-dot ' + (p.isOnline ? 'online' : 'offline') + '" style="width:10px;height:10px"></span>';
     html += '<div>';
     html += '<h2 class="text-lg font-semibold text-white">' + esc(p.name) + '</h2>';
-    html += '<div class="text-xs text-muted">' + esc(p.profession || 'Unknown') + ' \u00b7 ' + (p.male ? 'Male' : 'Female');
-    if (p.affliction && p.affliction !== 'Unknown') html += ' \u00b7 ' + esc(p.affliction);
-    if (p.clanName) html += ' \u00b7 [' + esc(p.clanName) + ']' + (p.clanRank ? ' (' + esc(p.clanRank) + ')' : '');
+    html += '<div class="text-xs text-muted">' + entityLink(p.profession || 'Unknown', 'item') + ' \u00b7 ' + (p.male ? 'Male' : 'Female');
+    if (p.affliction && p.affliction !== 'Unknown') html += ' \u00b7 ' + entityLink(p.affliction, 'item');
+    if (p.clanName) html += ' \u00b7 <span class="entity-link" data-entity-table="clans" data-entity-search="' + esc(p.clanName) + '">[' + esc(p.clanName) + ']</span>' + (p.clanRank ? ' (' + esc(p.clanRank) + ')' : '');
     html += '</div>';
     html += '<a href="https://steamcommunity.com/profiles/' + esc(p.steamId) + '" target="_blank" class="text-[11px] text-accent hover:underline font-mono">' + esc(p.steamId) + '</a>';
     html += '</div></div>';
 
-    // Level / XP progress bar
     if (p.level || p.expCurrent) {
       var expPct = (p.expRequired > 0) ? Math.round((p.expCurrent / p.expRequired) * 100) : 0;
       html += '<div class="mb-4"><div class="flex items-center justify-between mb-1"><span class="text-xs font-medium text-muted">Level ' + (p.level || 0) + '</span>';
@@ -1013,7 +1252,6 @@
       html += '</div>';
     }
 
-    // Current life kills
     html += '<div class="mb-4"><h3 class="text-xs font-medium text-muted uppercase tracking-wider mb-2">Kill Stats (Current Life)</h3>';
     html += '<div class="grid grid-cols-4 gap-2">';
     var killStats = [['Zombies', p.zeeksKilled], ['Headshots', p.headshots], ['Melee', p.meleeKills], ['Gun', p.gunKills], ['Blast', p.blastKills], ['Fist', p.fistKills], ['Takedown', p.takedownKills], ['Vehicle', p.vehicleKills]];
@@ -1022,7 +1260,6 @@
     }
     html += '</div></div>';
 
-    // Lifetime kills
     if (p.hasExtendedStats) {
       html += '<div class="mb-4"><h3 class="text-xs font-medium text-muted uppercase tracking-wider mb-2">Lifetime Kills</h3>';
       html += '<div class="grid grid-cols-4 gap-2">';
@@ -1033,7 +1270,6 @@
       html += '</div></div>';
     }
 
-    // Survival
     html += '<div class="mb-4"><h3 class="text-xs font-medium text-muted uppercase tracking-wider mb-2">Survival</h3>';
     html += '<div class="grid grid-cols-3 gap-2 text-xs">';
     var survStats = [
@@ -1049,16 +1285,15 @@
     }
     html += '</div></div>';
 
-    // Vitals
     if (S.toggles.showVitals !== false) {
       html += '<div class="mb-4"><h3 class="text-xs font-medium text-muted uppercase tracking-wider mb-2">Vitals</h3>';
       html += '<div class="space-y-1.5">';
       var vitals = [
-        { label: 'Health', cur: p.health, max: p.maxHealth, color: '#34d399' },
-        { label: 'Hunger', cur: p.hunger, max: p.maxHunger, color: '#fbbf24' },
+        { label: 'Health', cur: p.health, max: p.maxHealth, color: '#6dba82' },
+        { label: 'Hunger', cur: p.hunger, max: p.maxHunger, color: '#d4a843' },
         { label: 'Thirst', cur: p.thirst, max: p.maxThirst, color: '#3b82f6' },
         { label: 'Stamina', cur: p.stamina, max: p.maxStamina, color: '#a855f7' },
-        { label: 'Infection', cur: p.infection, max: p.maxInfection, color: '#f87171' },
+        { label: 'Infection', cur: p.infection, max: p.maxInfection, color: '#c45a4a' },
       ];
       if (p.battery != null) vitals.push({ label: 'Battery', cur: p.battery, max: 100, color: '#38bdf8' });
       if (p.fatigue != null) vitals.push({ label: 'Fatigue', cur: p.fatigue, max: 100, color: '#818cf8' });
@@ -1071,18 +1306,16 @@
       html += '</div></div>';
     }
 
-    // Status Effects
     if ((p.playerStates && p.playerStates.length) || (p.bodyConditions && p.bodyConditions.length)) {
       html += '<div class="mb-4"><h3 class="text-xs font-medium text-muted uppercase tracking-wider mb-2">Status Effects</h3>';
       html += '<div class="flex flex-wrap gap-1">';
       var ps2 = p.playerStates || [];
-      for (var psi = 0; psi < ps2.length; psi++) html += '<span class="text-[11px] bg-amber-400/10 text-amber-400 px-1.5 py-0.5 rounded">' + esc(ps2[psi]) + '</span>';
+      for (var psi = 0; psi < ps2.length; psi++) html += '<span class="text-[11px] bg-amber-400/10 text-amber-400 px-1.5 py-0.5 rounded entity-link" data-entity-table="game_afflictions" data-entity-search="' + esc(ps2[psi]) + '">' + esc(ps2[psi]) + '</span>';
       var bc = p.bodyConditions || [];
-      for (var bci = 0; bci < bc.length; bci++) html += '<span class="text-[11px] bg-red-400/10 text-red-400 px-1.5 py-0.5 rounded">' + esc(bc[bci]) + '</span>';
+      for (var bci = 0; bci < bc.length; bci++) html += '<span class="text-[11px] bg-red-400/10 text-red-400 px-1.5 py-0.5 rounded entity-link" data-entity-table="game_afflictions" data-entity-search="' + esc(bc[bci]) + '">' + esc(bc[bci]) + '</span>';
       html += '</div></div>';
     }
 
-    // Inventory
     if (S.toggles.showInventory !== false) {
       html += buildInventorySection('Equipment', p.equipment, 'equipment');
       html += buildInventorySection('Quick Slots', p.quickSlots, 'quickslots');
@@ -1090,7 +1323,6 @@
       html += buildInventorySection('Backpack', p.backpackItems, 'storage');
     }
 
-    // Recipes
     if (S.toggles.showRecipes !== false && p.craftingRecipes && p.craftingRecipes.length) {
       html += '<div class="mb-3"><h3 class="text-xs font-medium text-muted uppercase tracking-wider mb-1.5">Crafting Recipes (' + p.craftingRecipes.length + ')</h3>';
       html += '<div class="flex flex-wrap gap-1">';
@@ -1101,15 +1333,13 @@
       html += '</div></div>';
     }
 
-    // Skills
     if (p.unlockedSkills && p.unlockedSkills.length) {
       html += '<div class="mb-3"><h3 class="text-xs font-medium text-muted uppercase tracking-wider mb-1.5">Unlocked Skills (' + p.unlockedSkills.length + ')</h3>';
       html += '<div class="flex flex-wrap gap-1">';
-      for (var ski = 0; ski < p.unlockedSkills.length; ski++) html += '<span class="text-[10px] bg-accent/10 text-accent px-1.5 py-0.5 rounded">' + esc(p.unlockedSkills[ski]) + '</span>';
+      for (var ski = 0; ski < p.unlockedSkills.length; ski++) html += '<span class="text-[10px] bg-accent/10 text-accent px-1.5 py-0.5 rounded entity-link" data-entity-table="game_skills" data-entity-search="' + esc(p.unlockedSkills[ski]) + '">' + esc(p.unlockedSkills[ski]) + '</span>';
       html += '</div></div>';
     }
 
-    // Coordinates
     if (S.toggles.showCoordinates !== false && p.hasPosition) {
       html += '<div class="mt-3 text-[11px] text-muted font-mono">Position: ' + p.worldX + ', ' + p.worldY + ', ' + p.worldZ + '</div>';
     }
@@ -1143,7 +1373,7 @@
         html += '<div class="inv-slot empty"><span class="inv-name">Empty</span></div>';
       } else {
         var durPct = item.durability != null ? Math.round(item.durability) : null;
-        var durColor = durPct != null ? (durPct > 60 ? '#34d399' : durPct > 25 ? '#fbbf24' : '#f87171') : '';
+        var durColor = durPct != null ? (durPct > 60 ? '#6dba82' : durPct > 25 ? '#d4a843' : '#c45a4a') : '';
         var durBar = durPct != null ? '<div class="inv-dur-track"><div class="inv-dur-fill" style="width:' + durPct + '%;background:' + durColor + '"></div></div>' : '';
         var fpAttr = item.fingerprint ? ' data-item-fp="' + esc(item.fingerprint) + '"' : '';
         var ammoAttr = item.ammo ? ' data-item-ammo="' + item.ammo + '"' : '';
@@ -1156,32 +1386,26 @@
     return html;
   }
 
-  // ══════════════════════════════════════════════════
-  //  CLANS
-  // ══════════════════════════════════════════════════
-
   async function loadClans() {
     var container = $('#clan-list');
     if (!container) return;
 
     var allClans = [];
 
-    // Try dedicated clan API (DB-backed)
     try {
       var r = await fetch('/api/panel/clans');
       if (r.ok) {
         var d = await r.json();
         allClans = d.clans || [];
       }
-    } catch (e) { /* fall through */ }
+    } catch (e) {  }
 
-    // Fallback: group from player data
     if (allClans.length === 0) {
       if (!S.players.length) {
         try {
           var r2 = await fetch('/api/players');
           if (r2.ok) { var d2 = await r2.json(); S.players = d2.players || []; }
-        } catch (e) { /* ignore */ }
+        } catch (e) {  }
       }
 
       var clanMap = {};
@@ -1207,7 +1431,6 @@
       }
     }
 
-    // Enrich clans with player data if available
     for (var ci = 0; ci < allClans.length; ci++) {
       var clan = allClans[ci];
       clan._onlineCount = 0;
@@ -1232,7 +1455,6 @@
       }
     }
 
-    // Apply search filter
     var searchVal = ($('#clan-search') ? $('#clan-search').value : '').toLowerCase();
     var filtered = allClans;
     if (searchVal) {
@@ -1245,16 +1467,14 @@
       });
     }
 
-    // Apply sort
     var sortVal = ($('#clan-sort') ? $('#clan-sort').value : 'members');
     filtered.sort(function(a, b) {
       if (sortVal === 'name') return (a.name || '').localeCompare(b.name || '');
       if (sortVal === 'online') return (b._onlineCount || 0) - (a._onlineCount || 0);
       if (sortVal === 'kills') return (b._totalKills || 0) - (a._totalKills || 0);
-      return (b.members || []).length - (a.members || []).length; // default: members
+      return (b.members || []).length - (a.members || []).length; 
     });
 
-    // Update stat cards
     var totalPlayers = 0;
     var totalOnline = 0;
     var largestName = '-';
@@ -1282,7 +1502,6 @@
       return;
     }
 
-    // Render clan cards
     container.innerHTML = '';
     for (var ci2 = 0; ci2 < filtered.length; ci2++) {
       var clan2 = filtered[ci2];
@@ -1291,7 +1510,7 @@
       var online2 = clan2._onlineCount || 0;
 
       var html = '';
-      // Header
+      
       html += '<div class="flex items-center justify-between mb-3">';
       html += '<div>';
       html += '<h3 class="text-base font-semibold text-white">[' + esc(clan2.name) + ']</h3>';
@@ -1299,14 +1518,13 @@
       if (online2 > 0) html += ' · <span class="text-calm">' + online2 + ' online</span>';
       html += '</span>';
       html += '</div>';
-      // Online indicator
+      
       html += '<div class="flex items-center gap-1.5">';
       if (online2 > 0) html += '<span class="w-2.5 h-2.5 rounded-full bg-calm animate-pulse"></span>';
       else html += '<span class="w-2.5 h-2.5 rounded-full bg-muted/30"></span>';
       html += '</div>';
       html += '</div>';
 
-      // Stats row
       html += '<div class="grid grid-cols-3 gap-2 mb-3">';
       html += '<div class="text-center bg-surface-300 rounded-lg py-1.5 px-1">';
       html += '<div class="text-[10px] text-muted uppercase">Kills</div>';
@@ -1322,9 +1540,8 @@
       html += '</div>';
       html += '</div>';
 
-      // Member list
       html += '<div class="space-y-1">';
-      // Sort members: online first, then by kills
+      
       members2.sort(function(a, b) {
         if (a.is_online !== b.is_online) return a.is_online ? -1 : 1;
         return (b.kills || 0) - (a.kills || 0);
@@ -1345,6 +1562,7 @@
       card.innerHTML = html;
       container.appendChild(card);
     }
+    
   }
 
   function formatPlaytimeShort(seconds) {
@@ -1355,17 +1573,31 @@
     return m + 'm';
   }
 
-  // ══════════════════════════════════════════════════
-  //  ACTIVITY
-  // ══════════════════════════════════════════════════
+  var ACTIVITY_PAGE_SIZE = 100;
+  var activityOffset = 0;
+  var activityHasMore = false;
 
-  async function loadActivity() {
+  function resetActivityPaging() {
+    activityOffset = 0;
+    activityHasMore = false;
+    var container = $('#activity-feed');
+    if (container) container.innerHTML = '';
+    var btn = $('#activity-load-more');
+    if (btn) btn.classList.add('hidden');
+  }
+
+  window.__loadMoreActivity = function() {
+    loadActivity(true);
+  };
+
+  async function loadActivity(append) {
     var container = $('#activity-feed');
     if (!container) return;
     var type = $('#activity-filter') ? $('#activity-filter').value : '';
     var search = ($('#activity-search') ? $('#activity-search').value : '').toLowerCase();
     var date = $('#activity-date') ? $('#activity-date').value : '';
-    var params = new URLSearchParams({ limit: '200' });
+    if (!append) { activityOffset = 0; }
+    var params = new URLSearchParams({ limit: String(ACTIVITY_PAGE_SIZE), offset: String(activityOffset) });
     if (type) params.set('type', type);
     if (search) params.set('actor', search);
     try {
@@ -1373,24 +1605,108 @@
       var d = await r.json();
       var events = d.events || [];
       if (date) events = events.filter(function(e) { return (e.created_at || '').startsWith(date); });
-      renderActivityFeed(container, events, false);
+      activityHasMore = events.length >= ACTIVITY_PAGE_SIZE;
+      activityOffset += events.length;
+      renderActivityFeed(container, events, false, append);
+      var btn = $('#activity-load-more');
+      if (btn) btn.classList.toggle('hidden', !activityHasMore);
     } catch (e) {
-      container.innerHTML = '<div class="feed-empty">Failed to load activity</div>';
+      if (!append) container.innerHTML = '<div class="feed-empty">Failed to load activity</div>';
     }
   }
 
-  function renderActivityFeed(container, events, compact) {
-    if (!container) return;
-    if (!events || !events.length) { container.innerHTML = '<div class="feed-empty">No events</div>'; return; }
-    container.innerHTML = '';
-    var limit = compact ? 15 : events.length;
-    for (var i = 0; i < Math.min(limit, events.length); i++) {
+  function groupActivityEvents(events) {
+    if (!events || !events.length) return [];
+    var grouped = [];
+    var i = 0;
+    while (i < events.length) {
       var e = events[i];
-      var item = el('div', 'feed-item fade-in');
-      var time = e.created_at ? new Date(e.created_at).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false }) : '';
-      var fmt = formatActivityEvent(e);
-      item.innerHTML = '<span class="feed-time">' + time + '</span><span class="feed-ico">' + fmt.icon + '</span><span class="feed-txt">' + fmt.text + '</span>';
-      container.appendChild(item);
+      var groupable = e.type === 'container_loot' || e.type === 'player_build' || e.type === 'container_item_added' || e.type === 'container_item_removed' || e.type === 'structure_placed' || e.type === 'structure_destroyed';
+      if (!groupable) { grouped.push({ events: [e], count: 1 }); i++; continue; }
+      var batch = [e];
+      var j = i + 1;
+      while (j < events.length && events[j].type === e.type && (events[j].actor || events[j].steam_id) === (e.actor || e.steam_id)) {
+        var tA = e.created_at ? new Date(e.created_at).getTime() : 0;
+        var tB = events[j].created_at ? new Date(events[j].created_at).getTime() : 0;
+        if (Math.abs(tA - tB) > 120000) break;
+        batch.push(events[j]);
+        j++;
+      }
+      grouped.push({ events: batch, count: batch.length });
+      i = j;
+    }
+    return grouped;
+  }
+
+  function renderActivityFeed(container, events, compact, append) {
+    if (!container) return;
+    if (!append) container.innerHTML = '';
+    if (!events || !events.length) {
+      if (!append) container.innerHTML = '<div class="feed-empty">No events</div>';
+      return;
+    }
+    var limit = compact ? 15 : events.length;
+    var sliced = events.slice(0, limit);
+    var groups = groupActivityEvents(sliced);
+    for (var g = 0; g < groups.length; g++) {
+      var group = groups[g];
+      var e = group.events[0];
+      if (group.count === 1) {
+        var item = el('div', 'feed-item fade-in');
+        var time = e.created_at ? new Date(e.created_at).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false }) : '';
+        var fmt = formatActivityEvent(e);
+        item.innerHTML = '<span class="feed-time">' + time + '</span><span class="feed-ico">' + fmt.icon + '</span><span class="feed-txt">' + fmt.text + '</span>';
+        container.appendChild(item);
+      } else {
+        
+        var items = {};
+        for (var k = 0; k < group.events.length; k++) {
+          var ev = group.events[k];
+          var name = ev.item || ev.type;
+          items[name] = (items[name] || 0) + (ev.amount || 1);
+        }
+        var summary = Object.keys(items).map(function(n) { var t = /built|placed|destroyed/.test(e.type) ? 'structure' : 'item'; return entityLink(n, t) + (items[n] > 1 ? ' \u00d7' + items[n] : ''); }).join(', ');
+        var fmt0 = formatActivityEvent(e);
+        var actor = e.actor_name || e.actor || e.steam_id || 'Unknown';
+        var actorHtml = '<span class="player-link" data-steam-id="' + esc(e.steam_id || e.actor || '') + '">' + esc(actor) + '</span>';
+        var time0 = e.created_at ? new Date(e.created_at).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false }) : '';
+        var actionWord = { container_loot: 'looted', player_build: 'built', container_item_added: 'added', container_item_removed: 'removed', structure_placed: 'placed', structure_destroyed: 'destroyed' }[e.type] || 'did';
+        var groupEl = el('div', 'feed-item feed-group fade-in');
+        groupEl.innerHTML = '<span class="feed-time">' + time0 + '</span><span class="feed-ico">' + fmt0.icon + '</span><span class="feed-txt">' + actorHtml + ' <strong>' + actionWord + '</strong> ' + group.count + ' items: ' + summary + '</span>';
+        groupEl.title = 'Click to expand ' + group.count + ' events';
+        groupEl.style.cursor = 'pointer';
+        (function(groupEl, groupEvents) {
+          var expanded = false;
+          groupEl.addEventListener('click', function() {
+            if (expanded) {
+              
+              var next = groupEl.nextSibling;
+              while (next && next.classList && next.classList.contains('feed-group-detail')) {
+                var rm = next;
+                next = next.nextSibling;
+                rm.remove();
+              }
+              expanded = false;
+              groupEl.classList.remove('feed-group-open');
+            } else {
+              
+              var frag = document.createDocumentFragment();
+              for (var d = 0; d < groupEvents.length; d++) {
+                var de = groupEvents[d];
+                var di = el('div', 'feed-item feed-group-detail fade-in');
+                var dt = de.created_at ? new Date(de.created_at).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false }) : '';
+                var df = formatActivityEvent(de);
+                di.innerHTML = '<span class="feed-time">' + dt + '</span><span class="feed-ico">' + df.icon + '</span><span class="feed-txt">' + df.text + '</span>';
+                frag.appendChild(di);
+              }
+              groupEl.parentNode.insertBefore(frag, groupEl.nextSibling);
+              expanded = true;
+              groupEl.classList.add('feed-group-open');
+            }
+          });
+        })(groupEl, group.events);
+        container.appendChild(groupEl);
+      }
     }
   }
 
@@ -1400,29 +1716,36 @@
     var actorHtml = '<span class="player-link" data-steam-id="' + esc(e.steam_id || e.actor || '') + '">' + esc(actor) + '</span>';
     var targetHtml = target ? '<span class="player-link" data-steam-id="' + esc(e.target_steam_id || '') + '">' + esc(target) + '</span>' : '';
     var itemName = e.item || '';
+    
+    var _itype = 'item';
+    if (e.type === 'player_build' || e.type === 'structure_placed' || e.type === 'structure_destroyed' || e.type === 'building_destroyed') _itype = 'structure';
+    else if (e.type === 'vehicle_change') _itype = 'vehicle';
+    else if (e.type === 'container_loot' || e.type === 'container_item_added' || e.type === 'container_item_removed') _itype = 'item';
+    else if (e.type === 'raid_damage') _itype = 'structure';
+    var itemHtml = itemName ? entityLink(itemName, _itype) : '';
 
     var map = {
       player_connect:    { icon: '\u2192', text: actorHtml + ' <strong>connected</strong>' },
       player_disconnect: { icon: '\u2190', text: actorHtml + ' <strong>disconnected</strong>' },
       player_death:      { icon: '\u2715', text: actorHtml + ' <strong>died</strong>' + (e.details ? ' \u2014 ' + esc(tryParseDetails(e.details, 'cause') || '') : '') },
       player_death_pvp:  { icon: '\u2694', text: actorHtml + ' <strong>killed</strong> ' + targetHtml },
-      player_build:      { icon: '\u25AA', text: actorHtml + ' <strong>built</strong> ' + esc(itemName) + (e.amount > 1 ? ' \u00d7' + e.amount : '') },
-      container_loot:    { icon: '\u25C7', text: actorHtml + ' <strong>looted</strong> ' + esc(itemName || 'container') + (e.amount > 1 ? ' \u00d7' + e.amount : '') },
-      damage_taken:      { icon: '!', text: actorHtml + ' <strong>took damage</strong>' + (itemName ? ' from ' + esc(itemName) : '') },
-      raid_damage:       { icon: '\u26A0', text: actorHtml + ' <strong>raided</strong> ' + targetHtml + (itemName ? ' (' + esc(itemName) + ')' : '') },
-      building_destroyed:{ icon: '\u2715', text: esc(itemName || 'Structure') + ' <strong>destroyed</strong>' + (target ? ' by ' + targetHtml : '') },
-      admin_access:      { icon: '\u2605', text: actorHtml + ' <strong>admin action</strong>' + (itemName ? ': ' + esc(itemName) : '') },
-      anticheat_flag:    { icon: '\u2691', text: actorHtml + ' <strong>flagged</strong>' + (itemName ? ' \u2014 ' + esc(itemName) : '') },
-      container_item_added:  { icon: '+', text: esc(itemName) + ' <strong>added</strong> to container' + (actor !== 'Unknown' ? ' (' + actorHtml + ')' : '') },
-      container_item_removed:{ icon: '\u2212', text: esc(itemName) + ' <strong>removed</strong> from container' + (actor !== 'Unknown' ? ' (' + actorHtml + ')' : '') },
-      structure_destroyed:   { icon: '\u2715', text: esc(itemName || 'Structure') + ' <strong>destroyed</strong>' + (e.amount > 1 ? ' \u00d7' + e.amount : '') },
-      structure_placed:      { icon: '\u25AA', text: esc(itemName || 'Structure') + ' <strong>placed</strong>' + (e.amount > 1 ? ' \u00d7' + e.amount : '') },
-      vehicle_change:        { icon: '\u25CE', text: 'Vehicle ' + esc(itemName) + ' <strong>state changed</strong>' },
-      horse_change:          { icon: '\u25CE', text: 'Horse <strong>status changed</strong>' + (itemName ? ': ' + esc(itemName) : '') },
+      player_build:      { icon: '\u25AA', text: actorHtml + ' <strong>built</strong> ' + itemHtml + (e.amount > 1 ? ' \u00d7' + e.amount : '') },
+      container_loot:    { icon: '\u25C7', text: actorHtml + ' <strong>looted</strong> ' + (itemHtml || 'container') + (e.amount > 1 ? ' \u00d7' + e.amount : '') },
+      damage_taken:      { icon: '!', text: actorHtml + ' <strong>took damage</strong>' + (itemName ? ' from ' + itemHtml : '') },
+      raid_damage:       { icon: '\u26A0', text: actorHtml + ' <strong>raided</strong> ' + targetHtml + (itemName ? ' (' + itemHtml + ')' : '') },
+      building_destroyed:{ icon: '\u2715', text: (itemHtml || entityLink('Structure', 'structure')) + ' <strong>destroyed</strong>' + (target ? ' by ' + targetHtml : '') },
+      admin_access:      { icon: '\u2605', text: actorHtml + ' <strong>admin action</strong>' + (itemName ? ': ' + itemHtml : '') },
+      anticheat_flag:    { icon: '\u2691', text: actorHtml + ' <strong>flagged</strong>' + (itemName ? ' \u2014 ' + itemHtml : '') },
+      container_item_added:  { icon: '+', text: (itemHtml || esc(itemName)) + ' <strong>added</strong> to container' + (actor !== 'Unknown' ? ' (' + actorHtml + ')' : '') },
+      container_item_removed:{ icon: '\u2212', text: (itemHtml || esc(itemName)) + ' <strong>removed</strong> from container' + (actor !== 'Unknown' ? ' (' + actorHtml + ')' : '') },
+      structure_destroyed:   { icon: '\u2715', text: (itemHtml || entityLink('Structure', 'structure')) + ' <strong>destroyed</strong>' + (e.amount > 1 ? ' \u00d7' + e.amount : '') },
+      structure_placed:      { icon: '\u25AA', text: (itemHtml || entityLink('Structure', 'structure')) + ' <strong>placed</strong>' + (e.amount > 1 ? ' \u00d7' + e.amount : '') },
+      vehicle_change:        { icon: '\u25CE', text: entityLink('Vehicle' + (itemName ? ' ' + itemName : ''), 'vehicle') + ' <strong>state changed</strong>' },
+      horse_change:          { icon: '\u25CE', text: 'Horse <strong>status changed</strong>' + (itemName ? ': ' + itemHtml : '') },
       world_change:          { icon: '\u25CE', text: 'World <strong>' + esc(itemName || 'updated') + '</strong>' },
     };
 
-    return map[e.type] || { icon: '\u00b7', text: actorHtml + ' \u2014 ' + esc(e.type || 'event') + (itemName ? ' (' + esc(itemName) + ')' : '') };
+    return map[e.type] || { icon: '\u00b7', text: actorHtml + ' \u2014 ' + esc(e.type || 'event') + (itemName ? ' (' + itemHtml + ')' : '') };
   }
 
   function tryParseDetails(details, key) {
@@ -1431,20 +1754,19 @@
     return details[key] || '';
   }
 
-  // ══════════════════════════════════════════════════
-  //  CHAT
-  // ══════════════════════════════════════════════════
-
   async function loadChat() {
     var container = $('#chat-feed');
     if (!container) return;
+    var search = ($('#chat-search') ? $('#chat-search').value : '').trim();
     try {
-      var r = await fetch('/api/panel/chat?limit=200');
+      var params = new URLSearchParams({ limit: '200' });
+      if (search) params.set('search', search);
+      var r = await fetch('/api/panel/chat?' + params);
       var d = await r.json();
       var messages = d.messages || [];
       renderChatFeed(container, messages, false);
       var countEl = $('#chat-count');
-      if (countEl) countEl.textContent = messages.length + ' messages';
+      if (countEl) countEl.textContent = messages.length + ' messages' + (search ? ' (filtered)' : '');
       container.scrollTop = container.scrollHeight;
     } catch (e) {
       container.innerHTML = '<div class="feed-empty">Failed to load chat</div>';
@@ -1457,18 +1779,41 @@
     container.innerHTML = '';
     var limit = compact ? 15 : messages.length;
     var slice = messages.slice(0, limit);
-    for (var i = 0; i < slice.length; i++) {
-      var m = slice[i];
+    
+    var chrono = compact ? slice : slice.slice().reverse();
+    var lastDateKey = '';
+    for (var i = 0; i < chrono.length; i++) {
+      var m = chrono[i];
+      
+      if (!compact && m.created_at) {
+        var d = new Date(m.created_at);
+        var dateKey = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+        var timeKey = dateKey + '-' + Math.floor(d.getTime() / 1800000); 
+        if (timeKey !== lastDateKey) {
+          var sep = el('div', 'chat-time-sep');
+          var label = dateKey;
+          if (i > 0) {
+            label += ' \u00b7 ' + d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
+          }
+          sep.innerHTML = '<span>' + esc(label) + '</span>';
+          container.appendChild(sep);
+          lastDateKey = timeKey;
+        }
+      }
       var msg = el('div', 'chat-msg');
       var isSystem = m.type === 'join' || m.type === 'leave' || m.type === 'death';
       var isOutbound = m.direction === 'outbound';
+      var timestamp = !compact && m.created_at ? new Date(m.created_at).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false }) : '';
+      var timeHtml = timestamp ? '<span class="chat-time-inline">' + timestamp + '</span>' : '';
       if (isSystem) {
         var action = m.type === 'join' ? 'joined' : m.type === 'leave' ? 'left' : 'died';
-        msg.innerHTML = '<span class="chat-author system">System</span><span class="chat-text text-muted">' + esc(m.player_name || 'Player') + ' ' + action + '</span>';
+        var pLink = '<span class="player-link" data-steam-id="' + esc(m.steam_id || '') + '">' + esc(m.player_name || 'Player') + '</span>';
+        msg.innerHTML = timeHtml + '<span class="chat-author system">System</span><span class="chat-text text-muted">' + pLink + ' ' + action + '</span>';
       } else {
         var authorCls = isOutbound ? 'outbound' : '';
         var author = isOutbound ? (m.discord_user || 'Discord') : (m.player_name || 'Player');
-        msg.innerHTML = '<span class="chat-author ' + authorCls + '" data-steam-id="' + esc(m.steam_id || '') + '">' + esc(author) + '</span><span class="chat-text">' + esc(m.message || '') + '</span>';
+        var isAdmin = m.is_admin ? ' chat-admin' : '';
+        msg.innerHTML = timeHtml + '<span class="chat-author player-link' + isAdmin + ' ' + authorCls + '" data-steam-id="' + esc(m.steam_id || '') + '">' + esc(author) + '</span><span class="chat-text' + isAdmin + '">' + esc(m.message || '') + '</span>';
       }
       container.appendChild(msg);
     }
@@ -1480,7 +1825,7 @@
     var msg = input.value.trim();
     if (!msg) return;
     try {
-      // Use 'admin' RCON command — same format as ChatRelay (not 'say')
+      
       await fetch('/api/panel/rcon', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1498,15 +1843,26 @@
     } catch (e) { console.error('Chat send error:', e); }
   }
 
-  // ══════════════════════════════════════════════════
-  //  CONSOLE
-  // ══════════════════════════════════════════════════
+  var RCON_COMMANDS = ['info', 'players', 'save', 'say ', 'kick ', 'ban ', 'unban ', 'whitelist ', 'servermsg '];
+  var consoleHistory = [];
+  var consoleHistoryIdx = -1;
+  try { consoleHistory = JSON.parse(localStorage.getItem('hmz_console_history') || '[]'); } catch {}
+
+  function saveConsoleHistory() {
+    try { localStorage.setItem('hmz_console_history', JSON.stringify(consoleHistory.slice(-50))); } catch {}
+  }
 
   async function sendRcon() {
     var input = $('#rcon-input');
     if (!input) return;
     var cmd = input.value.trim();
     if (!cmd) return;
+    
+    if (consoleHistory[consoleHistory.length - 1] !== cmd) consoleHistory.push(cmd);
+    if (consoleHistory.length > 50) consoleHistory.shift();
+    saveConsoleHistory();
+    consoleHistoryIdx = -1;
+    hideConsoleAutocomplete();
     appendConsole(cmd, 'cmd');
     input.value = '';
     try {
@@ -1517,6 +1873,64 @@
     } catch (e) { appendConsole('Connection error: ' + e.message, 'err'); }
   }
 
+  function handleConsoleKeydown(e) {
+    var input = $('#rcon-input');
+    if (!input) return;
+    if (e.key === 'Enter') { sendRcon(); return; }
+    if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      if (consoleHistory.length === 0) return;
+      if (consoleHistoryIdx === -1) consoleHistoryIdx = consoleHistory.length;
+      consoleHistoryIdx = Math.max(0, consoleHistoryIdx - 1);
+      input.value = consoleHistory[consoleHistoryIdx] || '';
+      return;
+    }
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      if (consoleHistoryIdx === -1) return;
+      consoleHistoryIdx = Math.min(consoleHistory.length, consoleHistoryIdx + 1);
+      input.value = consoleHistoryIdx < consoleHistory.length ? consoleHistory[consoleHistoryIdx] : '';
+      if (consoleHistoryIdx >= consoleHistory.length) consoleHistoryIdx = -1;
+      return;
+    }
+    if (e.key === 'Tab') {
+      e.preventDefault();
+      var val = input.value.toLowerCase();
+      if (!val) return;
+      var match = RCON_COMMANDS.find(function(c) { return c.startsWith(val); });
+      if (match) input.value = match;
+      hideConsoleAutocomplete();
+      return;
+    }
+    if (e.key === 'Escape') { hideConsoleAutocomplete(); return; }
+    
+    setTimeout(function() { showConsoleAutocomplete(input.value); }, 0);
+  }
+
+  function showConsoleAutocomplete(val) {
+    var wrap = $('#console-autocomplete');
+    if (!wrap) return;
+    val = (val || '').toLowerCase().trim();
+    if (!val) { wrap.classList.add('hidden'); return; }
+    var matches = RCON_COMMANDS.filter(function(c) { return c.startsWith(val) && c !== val; });
+    
+    var histMatches = [];
+    for (var i = consoleHistory.length - 1; i >= 0 && histMatches.length < 3; i--) {
+      if (consoleHistory[i].toLowerCase().startsWith(val) && matches.indexOf(consoleHistory[i]) === -1) {
+        histMatches.push(consoleHistory[i]);
+      }
+    }
+    var all = matches.concat(histMatches);
+    if (all.length === 0) { wrap.classList.add('hidden'); return; }
+    wrap.innerHTML = all.map(function(c) { return '<div class="cmd-item" data-cmd="' + esc(c) + '">' + esc(c) + '</div>'; }).join('');
+    wrap.classList.remove('hidden');
+  }
+
+  function hideConsoleAutocomplete() {
+    var wrap = $('#console-autocomplete');
+    if (wrap) wrap.classList.add('hidden');
+  }
+
   function appendConsole(text, cls) {
     var out = $('#console-output');
     if (!out) return;
@@ -1525,10 +1939,6 @@
     out.appendChild(line);
     out.scrollTop = out.scrollHeight;
   }
-
-  // ══════════════════════════════════════════════════
-  //  SETTINGS
-  // ══════════════════════════════════════════════════
 
   async function loadSettings() {
     var container = $('#settings-grid');
@@ -1606,9 +2016,14 @@
       if (val !== orig) { S.settingsChanged[key] = val; e.target.classList.add('changed'); }
       else { delete S.settingsChanged[key]; e.target.classList.remove('changed'); }
 
+      var changeCount = Object.keys(S.settingsChanged).length;
+      var hasChanges = changeCount > 0;
       var btn = $('#settings-save-btn');
-      var hasChanges = Object.keys(S.settingsChanged).length > 0;
       if (btn) { btn.disabled = !hasChanges; btn.classList.toggle('opacity-50', !hasChanges); btn.classList.toggle('cursor-not-allowed', !hasChanges); }
+      var countBadge = $('#settings-change-count');
+      if (countBadge) { countBadge.classList.toggle('hidden', !hasChanges); countBadge.textContent = changeCount + ' change' + (changeCount !== 1 ? 's' : ''); }
+      var resetBtn = $('#settings-reset-btn');
+      if (resetBtn) resetBtn.classList.toggle('hidden', !hasChanges);
     });
   }
 
@@ -1634,7 +2049,67 @@
     });
   }
 
-  async function saveSettings() {
+  function showSettingsDiff() {
+    var keys = Object.keys(S.settingsChanged);
+    if (keys.length === 0) return;
+
+    var content = $('#settings-diff-content');
+    if (!content) return;
+    content.innerHTML = '';
+
+    var catOrder = {};
+    var orderIdx = 0;
+    for (var catName in SETTING_CATEGORIES) {
+      if (!SETTING_CATEGORIES.hasOwnProperty(catName)) continue;
+      var catKeys = SETTING_CATEGORIES[catName];
+      for (var ci = 0; ci < catKeys.length; ci++) { catOrder[catKeys[ci]] = orderIdx++; }
+    }
+    keys.sort(function(a, b) {
+      var oa = catOrder[a] != null ? catOrder[a] : 9999;
+      var ob = catOrder[b] != null ? catOrder[b] : 9999;
+      return oa - ob;
+    });
+
+    for (var i = 0; i < keys.length; i++) {
+      var key = keys[i];
+      var oldVal = S.settingsOriginal[key] != null ? String(S.settingsOriginal[key]) : '';
+      var newVal = S.settingsChanged[key];
+      var row = el('div', 'diff-row');
+      row.innerHTML = '<div class="diff-key">' + esc(humanizeSettingKey(key)) + '<div class="diff-key-raw">' + esc(key) + '</div></div>' +
+        '<div class="diff-values">' +
+        '<span class="diff-old">' + esc(oldVal) + '</span>' +
+        '<span class="diff-arrow">\u2192</span>' +
+        '<span class="diff-new">' + esc(newVal) + '</span>' +
+        '</div>';
+      content.appendChild(row);
+    }
+
+    var modal = $('#settings-diff-modal');
+    if (modal) modal.classList.remove('hidden');
+    
+    if (window.lucide) lucide.createIcons();
+  }
+
+  function resetSettingsChanges() {
+    
+    var keys = Object.keys(S.settingsChanged);
+    for (var i = 0; i < keys.length; i++) {
+      var input = $('input[data-key="' + keys[i] + '"]');
+      if (input) {
+        input.value = input.dataset.original;
+        input.classList.remove('changed');
+      }
+    }
+    S.settingsChanged = {};
+    var btn = $('#settings-save-btn');
+    if (btn) { btn.disabled = true; btn.classList.add('opacity-50', 'cursor-not-allowed'); }
+    var countBadge = $('#settings-change-count');
+    if (countBadge) countBadge.classList.add('hidden');
+    var resetBtn = $('#settings-reset-btn');
+    if (resetBtn) resetBtn.classList.add('hidden');
+  }
+
+  async function commitSettings() {
     if (Object.keys(S.settingsChanged).length === 0) return;
     var btn = $('#settings-save-btn');
     if (btn) { btn.disabled = true; btn.textContent = 'Saving...'; }
@@ -1651,7 +2126,11 @@
         }
         S.settingsChanged = {};
         if (btn) btn.textContent = 'Saved \u2713';
-        setTimeout(function() { if (btn) btn.textContent = 'Save Changes'; }, 2000);
+        var countBadge = $('#settings-change-count');
+        if (countBadge) countBadge.classList.add('hidden');
+        var resetBtn = $('#settings-reset-btn');
+        if (resetBtn) resetBtn.classList.add('hidden');
+        setTimeout(function() { if (btn) { btn.textContent = 'Save Changes'; btn.disabled = true; btn.classList.add('opacity-50', 'cursor-not-allowed'); } }, 2000);
       } else throw new Error(d.error || 'Save failed');
     } catch (e) {
       if (btn) { btn.textContent = 'Error'; btn.disabled = false; }
@@ -1659,10 +2138,6 @@
       setTimeout(function() { if (btn) btn.textContent = 'Save Changes'; }, 2000);
     }
   }
-
-  // ══════════════════════════════════════════════════
-  //  CONTROLS
-  // ══════════════════════════════════════════════════
 
   async function doPowerAction(action) {
     var log = $('#controls-log');
@@ -1686,9 +2161,40 @@
     container.scrollTop = container.scrollHeight;
   }
 
-  // ══════════════════════════════════════════════════
-  //  ITEMS — Item tracking interface
-  // ══════════════════════════════════════════════════
+  async function loadBackupList() {
+    var container = $('#backup-list');
+    if (!container) return;
+    try {
+      var r = await fetch('/api/panel/backups');
+      if (!r.ok) return;
+      var d = await r.json();
+      var backups = d.backups || [];
+      if (!backups.length) {
+        container.classList.add('hidden');
+        return;
+      }
+      container.classList.remove('hidden');
+      container.innerHTML = '<div class="text-[10px] text-muted uppercase tracking-wider mb-1">Recent Backups</div>';
+      for (var i = 0; i < Math.min(backups.length, 10); i++) {
+        var b = backups[i];
+        var row = el('div', 'flex items-center justify-between text-xs py-1 border-b border-border/20');
+        var dateStr = b.created ? new Date(b.created).toLocaleString('en-US', { month: 'short', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }) : '-';
+        var sizeStr = b.size > 0 ? formatBytes(b.size) : '';
+        var sourceBadge = b.source === 'panel' ? '<span class="text-[9px] bg-accent/10 text-accent px-1 py-0.5 rounded">Panel</span>' : '<span class="text-[9px] bg-surface-50 text-muted px-1 py-0.5 rounded">Local</span>';
+        row.innerHTML = '<div class="flex items-center gap-2"><span class="text-muted">' + dateStr + '</span>' + sourceBadge + '</div>' +
+          '<span class="text-muted font-mono text-[10px]">' + sizeStr + '</span>';
+        container.appendChild(row);
+      }
+    } catch (e) {  }
+  }
+
+  function formatBytes(bytes) {
+    if (!bytes || bytes <= 0) return '';
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB';
+    if (bytes < 1073741824) return (bytes / 1048576).toFixed(1) + ' MB';
+    return (bytes / 1073741824).toFixed(2) + ' GB';
+  }
 
   var _itemsData = { instances: [], groups: [], locations: [], counts: {} };
   var _itemsMovements = [];
@@ -1698,7 +2204,6 @@
       var search = ($('#items-search') ? $('#items-search').value : '').trim();
       var view = $('#items-view') ? $('#items-view').value : 'all';
 
-      // Fetch items data
       var url = '/api/panel/items?limit=500';
       if (search) url += '&search=' + encodeURIComponent(search);
       var locFilter = $('#items-location-filter') ? $('#items-location-filter').value : '';
@@ -1710,12 +2215,10 @@
       var resp = await fetch(url);
       _itemsData = await resp.json();
 
-      // Fetch recent movements
       var movResp = await fetch('/api/panel/movements?limit=50');
       var movData = await movResp.json();
       _itemsMovements = movData.movements || [];
 
-      // Update counters
       var uc = $('#items-unique-count');
       if (uc) uc.textContent = _itemsData.counts?.instances ?? _itemsData.instances.length;
       var gc = $('#items-group-count');
@@ -1725,7 +2228,6 @@
       var mc = $('#items-movement-count');
       if (mc) mc.textContent = _itemsMovements.length;
 
-      // Populate location filter (only on first load or if empty)
       var locSelect = $('#items-location-filter');
       if (locSelect && locSelect.options.length <= 1 && _itemsData.locations) {
         _itemsData.locations.sort(function(a, b) { return (a.type + a.id).localeCompare(b.type + b.id); });
@@ -1738,7 +2240,6 @@
         }
       }
 
-      // Render based on view mode
       var container = $('#items-content');
       if (!container) return;
 
@@ -1749,7 +2250,7 @@
       } else if (view === 'groups') {
         _renderGroupTable(container, _itemsData.groups);
       } else {
-        // Combined view
+        
         _renderCombinedView(container, _itemsData);
       }
 
@@ -1763,7 +2264,6 @@
   function _renderCombinedView(container, data) {
     var html = '';
 
-    // Groups section
     if (data.groups.length > 0) {
       html += '<div class="card"><h3 class="card-title">Fungible Groups <span class="text-xs text-muted font-normal">(' + data.groups.length + ')</span></h3>';
       html += '<div class="overflow-x-auto"><table class="w-full text-xs">';
@@ -1783,14 +2283,12 @@
       html += '</tbody></table></div></div>';
     }
 
-    // Unique instances section
     if (data.instances.length > 0) {
       html += '<div class="card"><h3 class="card-title">Unique Items <span class="text-xs text-muted font-normal">(' + data.instances.length + ')</span></h3>';
       html += _buildInstanceTable(data.instances);
       html += '</div>';
     }
 
-    // Recent movements section
     if (_itemsMovements.length > 0) {
       html += '<div class="card"><h3 class="card-title">Recent Movements <span class="text-xs text-muted font-normal">(last 50)</span></h3>';
       html += _buildMovementList(_itemsMovements);
@@ -1819,7 +2317,7 @@
       container.innerHTML = '<div class="text-sm text-muted py-8 text-center">No fungible groups found</div>';
       return;
     }
-    // Re-render the combined view with only groups
+    
     _renderCombinedView(container, { groups: groups, instances: [], locations: [] });
   }
 
@@ -1894,9 +2392,14 @@
     var cls = colors[type] || 'bg-surface-50 text-muted border-border';
     var label = _formatLocationType(type) + ': ' + _resolveLocationLabel(type, id);
     if (slot && slot !== 'items' && slot !== 'ground') label += ' (' + slot + ')';
-    // Make player-type badges clickable
+    
     if (type === 'player' && id && /^\d{17}$/.test(id)) {
       return '<span class="inline-flex px-1.5 py-0.5 rounded text-[10px] border cursor-pointer hover:brightness-125 player-link ' + cls + '" data-steam-id="' + esc(id) + '">' + esc(label) + '</span>';
+    }
+    
+    if ((type === 'container' || type === 'vehicle' || type === 'structure' || type === 'horse') && id) {
+      var entityTable = type === 'horse' ? 'world_horses' : type + 's';
+      return '<span class="inline-flex px-1.5 py-0.5 rounded text-[10px] border cursor-pointer hover:brightness-125 entity-link ' + cls + '" data-entity-table="' + entityTable + '" data-entity-search="' + esc(id) + '">' + esc(label) + '</span>';
     }
     return '<span class="inline-flex px-1.5 py-0.5 rounded text-[10px] border ' + cls + '">' + esc(label) + '</span>';
   }
@@ -1906,10 +2409,9 @@
     return map[type] || type;
   }
 
-  /** Resolve a location ID to a human-readable label — uses player names when possible */
   function _resolveLocationLabel(type, id) {
     if (!id) return '?';
-    // For player locations, try to resolve the steam ID to a name
+    
     if (type === 'player' && /^\d{17}$/.test(id)) {
       var p = S.players.find(function(pl) { return pl.steamId === id; });
       if (p && p.name) return p.name;
@@ -1920,14 +2422,14 @@
 
   function _shortenId(id) {
     if (!id) return '?';
-    // Steam IDs — show last 6 digits
+    
     if (/^\d{17}$/.test(id)) return '…' + id.slice(-6);
-    // Position-based IDs
+    
     if (id.startsWith('pickup_') || id.startsWith('backpack_')) {
       var parts = id.split('_');
       return parts[0] + ' @' + parts.slice(1).join(',');
     }
-    // Actor names — shorten long ones
+    
     if (id.length > 24) return id.slice(0, 20) + '…';
     return id;
   }
@@ -1944,11 +2446,11 @@
   }
 
   function _bindItemDetailHandlers() {
-    // Instance detail buttons
+    
     $$('.item-inst-detail').forEach(function(btn) {
       btn.addEventListener('click', function() { _showItemDetail('instance', parseInt(btn.dataset.id, 10)); });
     });
-    // Group detail buttons
+    
     $$('.item-grp-detail').forEach(function(btn) {
       btn.addEventListener('click', function() { _showItemDetail('group', parseInt(btn.dataset.id, 10)); });
     });
@@ -1994,7 +2496,6 @@
         html += '</div>';
       }
 
-      // Movement history
       var movements = data.movements || [];
       if (movements.length > 0) {
         html += '<h3 class="text-sm font-semibold text-white mb-2">Movement History (' + movements.length + ')</h3>';
@@ -2029,7 +2530,6 @@
     }
   }
 
-  // Items tab event listeners
   (function() {
     var searchInput = $('#items-search');
     if (searchInput) {
@@ -2049,10 +2549,6 @@
     if (modal) modal.addEventListener('click', function(e) { if (e.target === modal) modal.classList.add('hidden'); });
   })();
 
-  // ══════════════════════════════════════════════════
-  //  DATABASE — Comprehensive DB query interface
-  // ══════════════════════════════════════════════════
-
   async function loadDatabase() {
     var container = $('#db-results');
     if (!container) return;
@@ -2068,13 +2564,14 @@
       var r = await fetch('/api/panel/db/' + table + '?' + params);
       if (!r.ok) {
         var err = {};
-        try { err = await r.json(); } catch (e) { /* ignore */ }
+        try { err = await r.json(); } catch (e) {  }
         container.innerHTML = '<div class="feed-empty">Error: ' + esc(err.error || r.statusText) + '</div>';
         return;
       }
       var d = await r.json();
       var rows = d.rows || [];
       var columns = d.columns || [];
+      S.dbLastResult = { table: table, rows: rows, columns: columns };
       if (!rows.length) { container.innerHTML = '<div class="feed-empty">No data found</div>'; return; }
       renderDbTable(container, rows, columns);
     } catch (e) {
@@ -2086,20 +2583,17 @@
     if (!rows || !rows.length) { container.innerHTML = '<div class="feed-empty">No data</div>'; return; }
     var hasResolved = rows.some(function(r) { return r._resolved_name; });
 
-    // Build a steam_id → name lookup from loaded players
     var steamToName = {};
     for (var pi = 0; pi < S.players.length; pi++) {
       if (S.players[pi].steamId) steamToName[S.players[pi].steamId] = S.players[pi].name;
     }
 
-    // Columns that contain steam IDs
     var steamCols = {};
     for (var sc = 0; sc < columns.length; sc++) {
       var cn = columns[sc].toLowerCase();
       if (cn === 'steam_id' || cn === 'target_steam_id' || cn === 'steamid' || cn === 'owner_steam_id') steamCols[columns[sc]] = true;
     }
 
-    // Columns that are foreign keys to other tables
     var fkMap = {
       'player_id': 'players', 'clan_id': 'clans', 'steam_id': 'activity_log',
       'target_steam_id': 'activity_log', 'owner_steam_id': 'players'
@@ -2126,17 +2620,16 @@
         if (val == null) val = '';
         else if (typeof val === 'object') val = JSON.stringify(val);
         if ((col === 'created_at' || col === 'updated_at' || col === 'first_seen' || col === 'last_seen' || col === 'timestamp') && val) {
-          try { val = new Date(val).toLocaleString('en-US', { hour12: false }); } catch (e) { /* keep raw */ }
+          try { val = new Date(val).toLocaleString('en-US', { hour12: false }); } catch (e) {  }
         }
 
-        // Make steam ID columns clickable player links
         if (steamCols[col] && val && String(val).length > 10) {
           var resolved = steamToName[String(val)] || '';
           td.innerHTML = '<span class="player-link text-accent cursor-pointer" data-steam-id="' + esc(String(val)) + '">' + esc(resolved || String(val)) + '</span>';
           if (resolved) td.title = String(val);
           else td.title = String(val);
         }
-        // Make foreign key IDs clickable to jump to that table
+        
         else if (fkMap[col] && val && !steamCols[col]) {
           var linkEl = document.createElement('span');
           linkEl.className = 'db-link text-accent cursor-pointer hover:underline';
@@ -2163,6 +2656,46 @@
     table.appendChild(tbody);
     container.innerHTML = '';
     container.appendChild(table);
+  }
+
+  function exportDbCsv() {
+    if (!S.dbLastResult || !S.dbLastResult.rows.length) return;
+    var d = S.dbLastResult;
+    var cols = d.columns;
+    var rows = d.rows;
+
+    var lines = [];
+    lines.push(cols.map(csvEsc).join(','));
+    for (var i = 0; i < rows.length; i++) {
+      var cells = [];
+      for (var j = 0; j < cols.length; j++) {
+        var val = rows[i][cols[j]];
+        if (val == null) val = '';
+        else if (typeof val === 'object') val = JSON.stringify(val);
+        cells.push(csvEsc(String(val)));
+      }
+      lines.push(cells.join(','));
+    }
+
+    var csv = lines.join('\n');
+    var blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = url;
+    a.download = d.table + '_' + new Date().toISOString().slice(0, 10) + '.csv';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
+  function csvEsc(str) {
+    if (!str) return '';
+    
+    if (str.indexOf(',') !== -1 || str.indexOf('"') !== -1 || str.indexOf('\n') !== -1) {
+      return '"' + str.replace(/"/g, '""') + '"';
+    }
+    return str;
   }
 
   // ══════════════════════════════════════════════════
@@ -2195,13 +2728,15 @@
   }
 
   function showCopyFeedback(btn) {
-    var svg = btn.querySelector('svg');
-    if (svg) {
-      var origHtml = svg.outerHTML;
-      svg.outerHTML = '<svg class="w-4 h-4 text-calm" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>';
+    // Works with both Lucide <i> elements and raw <svg>
+    var icon = btn.querySelector('svg') || btn.querySelector('i[data-lucide]');
+    if (icon) {
+      var origHtml = icon.outerHTML;
+      icon.outerHTML = '<i data-lucide="check" class="w-4 h-4 text-calm"></i>';
+      if (window.lucide) lucide.createIcons({ nodes: [btn] });
       setTimeout(function() {
-        var check = btn.querySelector('svg');
-        if (check) check.outerHTML = origHtml;
+        var check = btn.querySelector('svg') || btn.querySelector('i[data-lucide]');
+        if (check) { check.outerHTML = origHtml; if (window.lucide) lucide.createIcons({ nodes: [btn] }); }
       }, 1500);
     }
   }
@@ -2235,6 +2770,33 @@
       return;
     }
 
+    // Activity cross-reference click → navigate to activity tab with filter
+    var actLink = e.target.closest('.activity-link');
+    if (actLink) {
+      e.preventDefault();
+      var actSearch = actLink.dataset.search || '';
+      var actType = actLink.dataset.type || '';
+      var as = $('#activity-search');
+      if (as) as.value = actSearch;
+      var af = $('#activity-filter');
+      if (af && actType) af.value = actType;
+      // Close any open popup/modal before navigating
+      var openPopup = document.querySelector('.item-popup');
+      if (openPopup) openPopup.remove();
+      var openModal = $('#player-modal');
+      if (openModal && !openModal.classList.contains('hidden')) openModal.classList.add('hidden');
+      switchTab('activity');
+      return;
+    }
+
+    // Close item popup via close button
+    var popupClose = e.target.closest('.item-popup-close');
+    if (popupClose) {
+      var popup = popupClose.closest('.item-popup');
+      if (popup) popup.remove();
+      return;
+    }
+
     // DB cross-reference click → navigate to related data
     var dbLink = e.target.closest('.db-link');
     if (dbLink) {
@@ -2246,9 +2808,45 @@
         if (sel) { sel.value = table; }
         var srch = $('#db-search');
         if (srch) { srch.value = search || ''; }
+        // Close any open popup/modal before navigating
+        var openPopup2 = document.querySelector('.item-popup');
+        if (openPopup2) openPopup2.remove();
+        var openModal2 = $('#player-modal');
+        if (openModal2 && !openModal2.classList.contains('hidden')) openModal2.classList.add('hidden');
         switchTab('database');
         setTimeout(loadDatabase, 100);
       }
+      return;
+    }
+
+    // Entity link click → show entity info popup (or navigate for clans)
+    var entLink = e.target.closest('.entity-link:not(.player-link)');
+    if (entLink) {
+      e.preventDefault();
+      e.stopPropagation();
+      var eTable = entLink.dataset.entityTable;
+      var eSearch = entLink.dataset.entitySearch;
+      if (eTable === 'clans' && eSearch) {
+        var openPopup3 = document.querySelector('.item-popup');
+        if (openPopup3) openPopup3.remove();
+        var openModal3 = $('#player-modal');
+        if (openModal3 && !openModal3.classList.contains('hidden')) openModal3.classList.add('hidden');
+        switchTab('clans');
+        setTimeout(function() {
+          var cs = $('#clan-search');
+          if (cs) { cs.value = eSearch; cs.dispatchEvent(new Event('input')); }
+        }, 100);
+      } else if (eSearch) {
+        showEntityPopup(entLink, eSearch, eTable);
+      }
+      return;
+    }
+
+    // Item popup close button
+    var popupClose = e.target.closest('.item-popup-close');
+    if (popupClose) {
+      var parentPopup = popupClose.closest('.item-popup');
+      if (parentPopup) parentPopup.remove();
       return;
     }
 
@@ -2257,6 +2855,29 @@
     if (popup && !e.target.closest('.item-popup') && !e.target.closest('.inv-clickable')) {
       popup.remove();
     }
+  });
+
+  // ══════════════════════════════════════════════════
+  //  ESCAPE KEY — close modals/popups
+  // ══════════════════════════════════════════════════
+
+  document.addEventListener('keydown', function(e) {
+    if (e.key !== 'Escape') return;
+    // Item popup
+    var popup = document.querySelector('.item-popup');
+    if (popup) { popup.remove(); return; }
+    // Settings diff modal
+    var sdm = $('#settings-diff-modal');
+    if (sdm && !sdm.classList.contains('hidden')) { sdm.classList.add('hidden'); return; }
+    // Player modal
+    var pm = $('#player-modal');
+    if (pm && !pm.classList.contains('hidden')) { pm.classList.add('hidden'); setBreadcrumbs([{ label: TAB_LABELS[S.currentTab] || S.currentTab }]); return; }
+    // Item detail modal
+    var idm = $('#item-detail-modal');
+    if (idm && !idm.classList.contains('hidden')) { idm.classList.add('hidden'); setBreadcrumbs([{ label: TAB_LABELS[S.currentTab] || S.currentTab }]); return; }
+    // Map detail panel
+    var mdp = $('#map-player-detail');
+    if (mdp && !mdp.classList.contains('hidden')) { mdp.classList.add('hidden'); return; }
   });
 
   function showItemPopup(slot) {
@@ -2293,8 +2914,8 @@
     var popup = document.createElement('div');
     popup.className = 'item-popup';
 
-    // Build header with basic info
-    var html = '<div class="item-popup-header">' + esc(name) + '</div>';
+    // Build header with close button
+    var html = '<div class="item-popup-header">' + esc(name) + '<span class="item-popup-close" style="cursor:pointer;color:#c45a4a;font-size:14px;line-height:1;padding:2px 4px;border-radius:3px;margin:-2px -4px -2px 0" title="Close">&times;</span></div>';
     html += '<div class="item-popup-body">';
 
     // Basic stats grid
@@ -2336,10 +2957,11 @@
 
     // Quick links
     html += '<div class="mt-2 flex gap-2 flex-wrap">';
-    html += '<span class="db-link text-[10px] text-accent hover:underline cursor-pointer" data-table="activity_log" data-search="' + esc(name) + '">Activity log \u2192</span>';
+    html += '<span class="activity-link text-[10px] text-accent hover:underline cursor-pointer" data-search="' + esc(name) + '">Activity log \u2192</span>';
     if (S.tier >= 3) { // admin
-      html += '<span class="db-link text-[10px] text-accent hover:underline cursor-pointer" data-table="item_instances" data-search="' + esc(name) + '">Item DB \u2192</span>';
-      html += '<span class="db-link text-[10px] text-accent hover:underline cursor-pointer" data-table="item_movements" data-search="' + esc(name) + '">Movements \u2192</span>';
+      var dbSearch = fp || name;
+      html += '<span class="db-link text-[10px] text-accent hover:underline cursor-pointer" data-table="item_instances" data-search="' + esc(dbSearch) + '">Item DB \u2192</span>';
+      html += '<span class="db-link text-[10px] text-accent hover:underline cursor-pointer" data-table="item_movements" data-search="' + esc(dbSearch) + '">Movements \u2192</span>';
     }
     html += '</div>';
     html += '</div>';
@@ -2468,6 +3090,10 @@
     if (type === 'player') {
       return '<span class="' + cls + ' player-link cursor-pointer hover:underline" data-steam-id="' + esc(id || '') + '">' + esc(label) + '</span>';
     }
+    if ((type === 'container' || type === 'vehicle' || type === 'structure' || type === 'horse') && id) {
+      var entityTable = type === 'horse' ? 'world_horses' : type + 's';
+      return '<span class="' + cls + ' entity-link cursor-pointer hover:underline" data-entity-table="' + entityTable + '" data-entity-search="' + esc(id) + '">' + esc(_formatLocationType(type)) + ':' + esc(label) + '</span>';
+    }
     return '<span class="' + cls + '">' + esc(_formatLocationType(type)) + ':' + esc(label) + '</span>';
   }
 
@@ -2494,6 +3120,125 @@
     } catch (e) { /* silent */ }
   }
 
+  // ── Entity info popup (items, structures, vehicles, animals, etc.) ──
+
+  var ENTITY_TABLE_TO_TYPE = {
+    item_instances: 'item', game_items: 'item', item_movements: 'item', item_groups: 'item',
+    structures: 'structure', game_buildings: 'structure',
+    vehicles: 'vehicle', game_vehicles_ref: 'vehicle',
+    containers: 'container',
+    world_horses: 'animal', game_animals: 'animal', companions: 'animal',
+    game_recipes: 'recipe',
+    game_afflictions: 'affliction',
+    game_skills: 'skill',
+    activity_log: 'item',
+  };
+
+  // Properties to hide in entity popups (internal/noisy fields)
+  var ENTITY_HIDE_KEYS = new Set([
+    'id', 'rowid', 'created_at', 'updated_at', 'raw_name', 'blueprint_path',
+    'category_raw', 'categoryRaw', 'effects', 'attributeModifiers', 'skillModifiers',
+    'icon_path', 'mesh_path', 'thumbnail_path',
+  ]);
+
+  function _formatEntityValue(key, val) {
+    if (val == null || val === '') return null;
+    if (typeof val === 'boolean') return val ? 'Yes' : 'No';
+    if (typeof val === 'number') {
+      if (key.toLowerCase().includes('percent') || key.toLowerCase().includes('multiplier')) return val.toFixed(2);
+      if (val !== Math.floor(val)) return val.toFixed(2);
+      return fmtNum(val);
+    }
+    var s = String(val);
+    if (s.length > 200) return s.slice(0, 200) + '\u2026';
+    return s;
+  }
+
+  function _formatEntityKey(key) {
+    return key.replace(/_/g, ' ').replace(/([a-z])([A-Z])/g, '$1 $2').replace(/\b\w/g, function(c) { return c.toUpperCase(); });
+  }
+
+  function showEntityPopup(triggerEl, name, table) {
+    var old = document.querySelector('.item-popup');
+    if (old) old.remove();
+
+    var type = ENTITY_TABLE_TO_TYPE[table] || 'item';
+
+    var popup = document.createElement('div');
+    popup.className = 'item-popup';
+
+    var html = '<div class="item-popup-header">' + esc(name) + '<span class="item-popup-close" style="cursor:pointer;color:#c45a4a;font-size:14px;line-height:1;padding:2px 4px;border-radius:3px;margin:-2px -4px -2px 0" title="Close">&times;</span></div>';
+    html += '<div class="item-popup-body">';
+    html += '<div class="text-[10px] text-muted mb-1">' + _formatEntityKey(type) + '</div>';
+    html += '<div id="entity-popup-data"><div class="text-[10px] text-muted">Loading\u2026</div></div>';
+
+    // Quick links
+    html += '<div class="mt-2 flex gap-2 flex-wrap" id="entity-popup-links">';
+    html += '<span class="activity-link text-[10px] text-accent hover:underline cursor-pointer" data-search="' + esc(name) + '">Activity log \u2192</span>';
+    html += '</div>';
+
+    html += '</div>';
+    popup.innerHTML = html;
+
+    var rect = triggerEl.getBoundingClientRect();
+    popup.style.position = 'fixed';
+    popup.style.left = Math.min(rect.right + 8, window.innerWidth - 320) + 'px';
+    popup.style.top = Math.max(rect.top - 20, 8) + 'px';
+    popup.style.zIndex = '10000';
+    popup.style.maxWidth = '340px';
+    document.body.appendChild(popup);
+
+    // Fetch entity data
+    _fetchEntityData(name, type, table);
+  }
+
+  async function _fetchEntityData(name, type, table) {
+    var container = document.getElementById('entity-popup-data');
+    var linksContainer = document.getElementById('entity-popup-links');
+    if (!container) return;
+
+    try {
+      var r = await (typeof authFetch === 'function' ? authFetch : fetch)('/api/panel/lookup/' + encodeURIComponent(type) + '/' + encodeURIComponent(name));
+      if (!r.ok) { container.innerHTML = '<div class="text-[10px] text-muted">No data available</div>'; return; }
+      var result = await r.json();
+
+      if (!result.found) {
+        container.innerHTML = '<div class="text-[10px] text-muted">Not found in game reference data</div>';
+        if (result.activityCount > 0) {
+          container.innerHTML += '<div class="text-[10px] text-muted mt-1">' + fmtNum(result.activityCount) + ' activity log references</div>';
+        }
+        return;
+      }
+
+      var data = result.data;
+      var html = '<div class="grid gap-y-0.5 text-xs" style="grid-template-columns: auto 1fr">';
+      var shown = 0;
+      for (var key in data) {
+        if (ENTITY_HIDE_KEYS.has(key)) continue;
+        var val = _formatEntityValue(key, data[key]);
+        if (val == null) continue;
+        html += '<div class="text-muted pr-2 whitespace-nowrap">' + esc(_formatEntityKey(key)) + '</div>';
+        html += '<div class="text-gray-300 truncate" title="' + esc(val) + '">' + esc(val) + '</div>';
+        shown++;
+        if (shown >= 16) { html += '<div class="text-muted text-[10px] col-span-2 mt-1">\u2026and more</div>'; break; }
+      }
+      html += '</div>';
+
+      if (result.activityCount > 0) {
+        html += '<div class="text-[10px] text-muted mt-1.5">' + fmtNum(result.activityCount) + ' activity log references</div>';
+      }
+
+      container.innerHTML = html;
+
+      // Add DB links for admins
+      if (S.tier >= 3 && linksContainer && result.refTable) {
+        linksContainer.innerHTML += '<span class="db-link text-[10px] text-accent hover:underline cursor-pointer" data-table="' + esc(result.refTable) + '" data-search="' + esc(name) + '">View in DB \u2192</span>';
+      }
+    } catch (e) {
+      container.innerHTML = '<div class="text-[10px] text-muted">Failed to load data</div>';
+    }
+  }
+
   // ══════════════════════════════════════════════════
   //  UTILITIES
   // ══════════════════════════════════════════════════
@@ -2503,6 +3248,38 @@
     var div = document.createElement('div');
     div.textContent = String(str);
     return div.innerHTML;
+  }
+
+  /**
+   * Render a clickable entity link for any game-world object.
+   * Clicking navigates to the DB tab filtered for that entity.
+   * @param {string} name - Display name
+   * @param {string} [type] - Entity type hint: 'item','player','vehicle','container','structure','building','animal','ai'
+   * @param {object} [opts] - { steamId, table, search, cls }
+   */
+  function entityLink(name, type, opts) {
+    if (!name) return '';
+    opts = opts || {};
+    var escaped = esc(name);
+    // Players — use player-link with steam ID
+    if (type === 'player') {
+      return '<span class="player-link entity-link cursor-pointer hover:underline text-accent" data-steam-id="' + esc(opts.steamId || '') + '">' + escaped + '</span>';
+    }
+    // Everything else — use entity-link which navigates to DB tab
+    var table = opts.table || '';
+    var search = opts.search || name;
+    if (!table) {
+      // Infer table from type
+      if (type === 'item') table = 'item_instances';
+      else if (type === 'vehicle') table = 'vehicles';
+      else if (type === 'container') table = 'containers';
+      else if (type === 'structure' || type === 'building') table = 'structures';
+      else if (type === 'animal') table = 'game_animals';
+      else if (type === 'ai' || type === 'zombie') table = 'activity_log';
+      else table = 'activity_log';
+    }
+    var cls = opts.cls || 'text-accent';
+    return '<span class="entity-link cursor-pointer hover:underline ' + cls + '" data-entity-table="' + esc(table) + '" data-entity-search="' + esc(search) + '">' + escaped + '</span>';
   }
 
   function formatPlaytime(minutes) {
@@ -2698,7 +3475,7 @@
       d.players.forEach(function(p) {
         if (p.lat == null) return;
         var online = !!p.online;
-        var icon = tlIcon(online ? '#34d399' : '#64748b', online ? 14 : 10, 'circle', p.name);
+        var icon = tlIcon(online ? '#6dba82' : '#7a746c', online ? 14 : 10, 'circle', p.name);
         var m = L.marker([p.lat, p.lng], { icon: icon, zIndexOffset: online ? 1000 : 500 });
         m.bindTooltip((online ? '🟢 ' : '') + p.name, { direction: 'top', offset: [0, -8] });
         m.bindPopup('<div class="tl-popup"><b>' + esc(p.name) + '</b> ' + (online ? '🟢' : '🔴') + '<br>' +
@@ -2818,7 +3595,7 @@
     if (TL.playing || !TL.snapshots.length) return;
     TL.playing = true;
     var btn = $('#tl-play');
-    if (btn) btn.textContent = '⏸';
+    if (btn) { btn.innerHTML = '<i data-lucide="pause" class="w-3.5 h-3.5"></i>'; if (window.lucide) lucide.createIcons({ nodes: [btn] }); }
     var interval = Math.max(200, 2000 / TL.speed);
     TL.timer = setInterval(function() {
       if (TL.idx >= TL.snapshots.length - 1) { tlStop(); return; }
@@ -2830,7 +3607,7 @@
     TL.playing = false;
     if (TL.timer) { clearInterval(TL.timer); TL.timer = null; }
     var btn = $('#tl-play');
-    if (btn) btn.textContent = '▶';
+    if (btn) { btn.innerHTML = '<i data-lucide="play" class="w-3.5 h-3.5"></i>'; if (window.lucide) lucide.createIcons({ nodes: [btn] }); }
   }
 
   function tlStep(dir) {

@@ -230,7 +230,7 @@ async function buildWelcomeContent(deps = {}) {
   }
 
   // ── Helper: build an inline row of top entries ──
-  // e.g. "<PR>1st</> Zuq 21h  |  <PR>2nd</> Bob 11h  |  <PR>3rd</> Cat 7h"
+  // e.g. "<PR>1st</> Alice 21h  |  <PR>2nd</> Bob 11h  |  <PR>3rd</> Cat 7h"
   const RANKS = ['1st', '2nd', '3rd'];
   function inlineRow(entries, colorTag) {
     return entries.map((text, i) =>

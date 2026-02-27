@@ -9,8 +9,8 @@
  *   - game_items              (718 items)
  *   - game_professions        (12 professions)
  *   - game_afflictions        (20 afflictions)
- *   - game_skills             (35 skills)
- *   - game_challenges         (32 challenges/stats)
+ *   - game_skills             (35 skills — all from DT_Skills)
+ *   - game_challenges         (67+ challenges — DT_Statistics + DT_StatConfig merged)
  *   - game_loading_tips       (26 tips)
  *   - game_server_setting_defs
  *   - game_recipes            (154 recipes)
@@ -60,19 +60,31 @@ const {
 
 // ─── Seed all game reference data ──────────────────────────────────────────
 
+// Current version — bump this whenever ENUM_MAPS, extractors, or curated data change
+// to force re-seed on existing databases.
+const GAME_REF_VERSION = 2;  // v2: corrected ENUM_MAPS, 35 skills, 116 challenges, DT_StatConfig
+
 /**
  * Seed all game reference data into the database.
  * Safe to call multiple times — uses INSERT OR REPLACE.
+ * Re-seeds automatically when GAME_REF_VERSION is bumped.
  *
  * @param {import('../db/database')} db - Initialised HumanitZDB instance
  */
 function seed(db) {
-  // Skip seeding if game_items already has data (template DB pre-populated)
+  // Check if re-seed is needed (version mismatch or empty)
   try {
     const count = db.db.prepare('SELECT COUNT(*) as n FROM game_items').get();
-    if (count && count.n > 0) {
-      console.log(`[GameRef] Game reference data already seeded (${count.n} items) — skipping`);
+    const storedVersion = db._getMeta('game_ref_version');
+    const currentVersion = String(GAME_REF_VERSION);
+
+    if (count && count.n > 0 && storedVersion === currentVersion) {
+      console.log(`[GameRef] Game reference data up to date (v${currentVersion}, ${count.n} items) — skipping`);
       return;
+    }
+
+    if (count && count.n > 0 && storedVersion !== currentVersion) {
+      console.log(`[GameRef] Game reference data outdated (v${storedVersion || '?'} → v${currentVersion}) — re-seeding...`);
     }
   } catch {
     // Table doesn't exist yet — proceed with seeding
@@ -105,7 +117,8 @@ function seed(db) {
   seedSprays(db);
 
   db._setMeta('game_ref_seeded', new Date().toISOString());
-  console.log('[GameRef] All game reference data seeded (22 tables)');
+  db._setMeta('game_ref_version', String(GAME_REF_VERSION));
+  console.log(`[GameRef] All game reference data seeded (v${GAME_REF_VERSION}, 22 tables)`);
 }
 
 // ─── Items (game_items — 718 entries) ───────────────────────────────────────
@@ -167,38 +180,21 @@ function seedAfflictions(db) {
 // ─── Skills ─────────────────────────────────────────────────────────────────
 
 function seedSkills(db) {
-  const detailsByName = {};
-  for (const [, detail] of Object.entries(SKILL_DETAILS)) {
-    detailsByName[detail.name.toUpperCase()] = detail;
-  }
-
-  const skills = Object.entries(SKILL_EFFECTS).map(([id, effect]) => {
-    const detail = detailsByName[id] || {};
+  // Use SKILL_DETAILS (35 extracted from DT_Skills) as primary source,
+  // enriched with SKILL_EFFECTS (21 hand-curated effect descriptions)
+  const skills = Object.entries(SKILL_DETAILS).map(([id, detail]) => {
+    const upperName = (detail.name || id).toUpperCase();
+    const effect = SKILL_EFFECTS[upperName] || SKILL_EFFECTS[id] || '';
     return {
-      id,
-      name: detail.name || id.charAt(0).toUpperCase() + id.slice(1).toLowerCase().replace(/_/g, ' '),
+      id: id,
+      name: detail.name || id,
       description: detail.description || '',
       effect,
-      category: detail.category?.toLowerCase() || _inferSkillCategory(id),
+      category: detail.category?.toLowerCase() || 'general',
       icon: '',
     };
   });
   db.seedGameSkills(skills);
-}
-
-function _inferSkillCategory(skillId) {
-  const combat = ['CALLUSED', 'SPRINTER', 'WRESTLER', 'VITAL SHOT', 'REDEYE', 'RELOADER', 'MAG FLIP', 'CONTROLLED BREATHING'];
-  const survival = ['BANDOLEER', 'HEALTHY GUT', 'INFECTION TREATMENT', 'BEAST OF BURDEN'];
-  const stealth = ['SPEED STEALTH', 'DEEP POCKETS', 'LIGHTFOOT', 'HACKER'];
-  const crafting = ['CARPENTRY', 'METAL WORKING', 'RING MY BELL'];
-  const social = ['CHARISMA', 'HAGGLER'];
-
-  if (combat.includes(skillId)) return 'combat';
-  if (survival.includes(skillId)) return 'survival';
-  if (stealth.includes(skillId)) return 'stealth';
-  if (crafting.includes(skillId)) return 'crafting';
-  if (social.includes(skillId)) return 'social';
-  return 'general';
 }
 
 // ─── Challenges ─────────────────────────────────────────────────────────────
@@ -206,21 +202,23 @@ function _inferSkillCategory(skillId) {
 function seedChallenges(db) {
   const merged = [];
 
+  // CHALLENGES now includes both DT_Statistics (32) and DT_StatConfig (67) merged
   for (const ch of CHALLENGES) {
     merged.push({
       id: ch.id,
       name: ch.name,
       description: ch.description,
       saveField: '',
-      target: 0,
+      target: ch.progressMax || 0,
     });
   }
 
+  // Overlay hand-curated CHALLENGE_DESCRIPTIONS (save-field mappings + friendly names)
   for (const [field, info] of Object.entries(CHALLENGE_DESCRIPTIONS)) {
     const existing = merged.find(m => m.name === info.name);
     if (existing) {
       existing.saveField = field;
-      existing.target = info.target || 0;
+      if (info.target) existing.target = info.target;
       if (info.desc && !existing.description) existing.description = info.desc;
     } else {
       merged.push({
