@@ -258,6 +258,7 @@ const config = {
   restartProfiles: process.env.RESTART_PROFILES || '',    // comma-separated profile names (cycle order)
   restartDelay: parseInt(process.env.RESTART_DELAY, 10) || 10, // countdown minutes before restart
   restartRotateDaily: envBool('RESTART_ROTATE_DAILY', true), // shift profile order each day
+  dockerContainer: process.env.DOCKER_CONTAINER || '',    // Docker container name for restart commands
 
   // Activity log — tracks item movements, horse changes, world events from save diffs
   enableActivityLog: envBool('ENABLE_ACTIVITY_LOG', true),

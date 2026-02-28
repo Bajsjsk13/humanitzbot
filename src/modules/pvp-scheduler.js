@@ -383,7 +383,7 @@ class PvpScheduler {
 
     // Execute restart
     let restartSucceeded = false;
-    const container = process.env.DOCKER_CONTAINER;
+    const container = this._config.dockerContainer || process.env.DOCKER_CONTAINER;
 
     // Prefer LinuxGSM restart inside the container — restarts the game process
     // without touching the container itself. LinuxGSM gracefully stops the game,

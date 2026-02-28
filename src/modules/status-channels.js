@@ -6,7 +6,7 @@ const STATUS_CHANNELS = [
   { key: 'players', template: '\u{1F465} Players: {value}', fallback: '\u{1F465} Players: --' },
 ];
 
-const CATEGORY_NAME = '\u{1F4CA} HumanitZ Server Info';
+const DEFAULT_CATEGORY_NAME = '\u{1F4CA} HumanitZ Server Info';
 
 class StatusChannels {
   /**
@@ -14,6 +14,7 @@ class StatusChannels {
    * @param {object} [deps]
    * @param {object} [deps.config]        Config overrides (for multi-server)
    * @param {Function} [deps.getPlayerList] Custom getPlayerList function (bound to a specific rcon)
+   * @param {string} [deps.categoryName]   Custom category name (for multi-server)
    */
   constructor(client, deps = {}) {
     this.client = client;
@@ -23,6 +24,7 @@ class StatusChannels {
     this.interval = null;
     this._config = deps.config || _defaultConfig;
     this._getPlayerList = deps.getPlayerList || getPlayerList;
+    this._categoryName = deps.categoryName || DEFAULT_CATEGORY_NAME;
     this.updateIntervalMs = Math.max(this._config.statusChannelInterval || 60000, 60000); // min 60s (Discord rate limits)
   }
 
@@ -42,7 +44,7 @@ class StatusChannels {
         await this._ensureChannel(ch);
       }
 
-      console.log(`[STATUS] Status channel ready in "${CATEGORY_NAME}" (updating every ${this.updateIntervalMs / 1000}s)`);
+      console.log(`[STATUS] Status channel ready in "${this._categoryName}" (updating every ${this.updateIntervalMs / 1000}s)`);
 
       // Initial update (don't await — voice channel renames can stall due to Discord rate limits)
       this._update().catch(err => console.error('[STATUS] Initial update error:', err.message));
@@ -63,7 +65,7 @@ class StatusChannels {
 
   async _ensureCategory() {
     const existing = this.guild.channels.cache.find(
-      c => c.type === ChannelType.GuildCategory && c.name === CATEGORY_NAME
+      c => c.type === ChannelType.GuildCategory && c.name === this._categoryName
     );
 
     if (existing) {
@@ -71,7 +73,7 @@ class StatusChannels {
       await this._ensureBotPermissions(existing);
     } else {
       this.category = await this.guild.channels.create({
-        name: CATEGORY_NAME,
+        name: this._categoryName,
         type: ChannelType.GuildCategory,
         position: 0,
         permissionOverwrites: [
@@ -85,7 +87,7 @@ class StatusChannels {
           },
         ],
       });
-      console.log(`[STATUS] Created category: ${CATEGORY_NAME}`);
+      console.log(`[STATUS] Created category: ${this._categoryName}`);
     }
 
     // Try to move to top

@@ -30,6 +30,7 @@ const AutoMessages = require('../modules/auto-messages');
 const LogWatcher = require('../modules/log-watcher');
 const PlayerStatsChannel = require('../modules/player-stats-channel');
 const PvpScheduler = require('../modules/pvp-scheduler');
+const ServerScheduler = require('../modules/server-scheduler');
 
 const SERVERS_FILE = path.join(__dirname, '..', '..', 'data', 'servers.json');
 const SERVERS_DIR = path.join(__dirname, '..', '..', 'data', 'servers');
@@ -181,6 +182,7 @@ function createServerConfig(serverDef) {
     if (serverDef.sftp.port) merged.ftpPort = serverDef.sftp.port;
     if (serverDef.sftp.user) merged.ftpUser = serverDef.sftp.user;
     if (serverDef.sftp.password) merged.ftpPassword = serverDef.sftp.password;
+    if (serverDef.sftp.privateKeyPath) merged.ftpPrivateKeyPath = serverDef.sftp.privateKeyPath;
   }
 
   // SFTP paths (falls back to primary defaults)
@@ -208,6 +210,18 @@ function createServerConfig(serverDef) {
   // Timezone overrides (falls back to primary's BOT_TIMEZONE / LOG_TIMEZONE)
   if (serverDef.botTimezone) merged.botTimezone = serverDef.botTimezone;
   if (serverDef.logTimezone) merged.logTimezone = serverDef.logTimezone;
+
+  // Docker container name (for restart commands)
+  if (serverDef.dockerContainer) merged.dockerContainer = serverDef.dockerContainer;
+
+  // Server scheduler overrides
+  if (serverDef.restartTimes) merged.restartTimes = serverDef.restartTimes;
+  if (serverDef.restartProfiles) merged.restartProfiles = serverDef.restartProfiles;
+  if (serverDef.restartProfileSettings) merged.restartProfileSettings = serverDef.restartProfileSettings;
+  if (serverDef.enableServerScheduler !== undefined) merged.enableServerScheduler = serverDef.enableServerScheduler;
+
+  // PvP settings overrides (applied when PvP turns on, e.g. OnDeath=2)
+  if (serverDef.pvpSettingsOverrides) merged.pvpSettingsOverrides = serverDef.pvpSettingsOverrides;
 
   // Auto-message overrides (per-server welcome + broadcast config)
   const am = serverDef.autoMessages;
@@ -414,7 +428,8 @@ class ServerInstance {
     // Status Channels (voice channel names)
     if (this.config.guildId) {
       try {
-        const mod = new StatusChannels(this.client, deps);
+        const categoryName = `\u{1F4CA} ${this.name || this.id}`;
+        const mod = new StatusChannels(this.client, { ...deps, categoryName });
         await mod.start();
         this._modules.statusChannels = mod;
         console.log(`[MULTI:${label}] StatusChannels active`);
@@ -444,6 +459,18 @@ class ServerInstance {
         console.log(`[MULTI:${label}] PvpScheduler active`);
       } catch (err) {
         console.error(`[MULTI:${label}] PvpScheduler failed:`, err.message);
+      }
+    }
+
+    // Server Scheduler (needs SFTP + RCON + restart times)
+    if (this.config.enableServerScheduler && this.config.rconHost && this.hasSftp && this.config.restartTimes) {
+      try {
+        const mod = new ServerScheduler(this.client, this._modules.logWatcher || null, deps);
+        await mod.start();
+        this._modules.serverScheduler = mod;
+        console.log(`[MULTI:${label}] ServerScheduler active`);
+      } catch (err) {
+        console.error(`[MULTI:${label}] ServerScheduler failed:`, err.message);
       }
     }
 

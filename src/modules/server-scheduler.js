@@ -76,15 +76,20 @@ class ServerScheduler {
     const profilesStr = this._config.restartProfiles || process.env.RESTART_PROFILES || '';
     this._profiles = profilesStr.split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
 
-    // Load profile settings from env
+    // Load profile settings from config (multi-server) or env
+    const preloaded = this._config.restartProfileSettings || {};
     for (const name of this._profiles) {
-      const envKey = `RESTART_PROFILE_${name.toUpperCase()}`;
-      const raw = process.env[envKey];
-      if (raw) {
-        try {
-          this._profileSettings[name] = JSON.parse(raw);
-        } catch (e) {
-          console.error(`[${this._label}] Invalid JSON in ${envKey}:`, e.message);
+      if (preloaded[name]) {
+        this._profileSettings[name] = preloaded[name];
+      } else {
+        const envKey = `RESTART_PROFILE_${name.toUpperCase()}`;
+        const raw = process.env[envKey];
+        if (raw) {
+          try {
+            this._profileSettings[name] = JSON.parse(raw);
+          } catch (e) {
+            console.error(`[${this._label}] Invalid JSON in ${envKey}:`, e.message);
+          }
         }
       }
     }
@@ -383,7 +388,7 @@ class ServerScheduler {
 
     // Execute restart
     let restartSucceeded = false;
-    const container = process.env.DOCKER_CONTAINER;
+    const container = this._config.dockerContainer || process.env.DOCKER_CONTAINER;
 
     // Prefer LinuxGSM restart inside the container — restarts the game process
     // without touching the container itself. LinuxGSM gracefully stops the game,
